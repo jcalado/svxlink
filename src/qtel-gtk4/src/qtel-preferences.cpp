@@ -464,44 +464,154 @@ create_network_page(QtelPreferences *self)
   return page;
 }
 
-// Common audio device options (svxlink uses "alsa:" prefix for ALSA devices)
-// Static arrays so they persist for callbacks
-static const char *audio_devices[] = {
-  "alsa:default",      // System default - works on most systems
-  "alsa:pulse",        // PulseAudio - recommended for desktop Linux
-  "alsa:pipewire",     // PipeWire - modern systems
-  "alsa:hw:0,0",       // First hardware device
-  "alsa:plughw:0,0",   // First device with automatic conversion
-  "alsa:hw:1,0",       // Second hardware device
-  "alsa:plughw:1,0",   // Second device with automatic conversion
-  NULL
-};
+// Dynamic audio device list
+typedef struct {
+  char **devices;      // Array of device strings (e.g., "alsa:hw:0,0")
+  char **names;        // Array of display names
+  int count;
+} AudioDeviceList;
 
-// Friendly display names for the devices
-static const char *audio_device_names[] = {
-  "System Default (alsa:default)",
-  "PulseAudio (alsa:pulse)",
-  "PipeWire (alsa:pipewire)",
-  "Hardware Device 0 (alsa:hw:0,0)",
-  "Hardware Device 0 with conversion (alsa:plughw:0,0)",
-  "Hardware Device 1 (alsa:hw:1,0)",
-  "Hardware Device 1 with conversion (alsa:plughw:1,0)",
-  NULL
-};
+static AudioDeviceList mic_devices = {NULL, NULL, 0};
+static AudioDeviceList spkr_devices = {NULL, NULL, 0};
+
+static void
+free_device_list(AudioDeviceList *list)
+{
+  if (list->devices)
+  {
+    for (int i = 0; i < list->count; i++)
+      g_free(list->devices[i]);
+    g_free(list->devices);
+    list->devices = NULL;
+  }
+  if (list->names)
+  {
+    for (int i = 0; i < list->count; i++)
+      g_free(list->names[i]);
+    g_free(list->names);
+    list->names = NULL;
+  }
+  list->count = 0;
+}
+
+// Enumerate ALSA devices by reading /proc/asound/cards
+static void
+enumerate_alsa_devices(AudioDeviceList *list, gboolean for_capture)
+{
+  free_device_list(list);
+
+  // Start with default devices
+  GPtrArray *devices = g_ptr_array_new();
+  GPtrArray *names = g_ptr_array_new();
+
+  // Add standard virtual devices first
+  g_ptr_array_add(devices, g_strdup("alsa:default"));
+  g_ptr_array_add(names, g_strdup("Default"));
+
+  g_ptr_array_add(devices, g_strdup("alsa:pulse"));
+  g_ptr_array_add(names, g_strdup("PulseAudio"));
+
+  g_ptr_array_add(devices, g_strdup("alsa:pipewire"));
+  g_ptr_array_add(names, g_strdup("PipeWire"));
+
+  // Read /proc/asound/cards to find hardware devices
+  gchar *cards_content = NULL;
+  if (g_file_get_contents("/proc/asound/cards", &cards_content, NULL, NULL))
+  {
+    gchar **lines = g_strsplit(cards_content, "\n", -1);
+    for (int i = 0; lines[i] != NULL; i++)
+    {
+      // Lines with card numbers start with a number, e.g.:
+      // " 0 [PCH            ]: HDA-Intel - HDA Intel PCH"
+      // " 1 [USB            ]: USB-Audio - USB Audio Device"
+      gchar *line = g_strstrip(g_strdup(lines[i]));
+      if (line[0] >= '0' && line[0] <= '9')
+      {
+        int card_num = atoi(line);
+
+        // Extract card name (in brackets)
+        gchar *bracket_start = strchr(line, '[');
+        gchar *bracket_end = bracket_start ? strchr(bracket_start, ']') : NULL;
+        gchar *card_short_name = NULL;
+        if (bracket_start && bracket_end)
+        {
+          card_short_name = g_strndup(bracket_start + 1, bracket_end - bracket_start - 1);
+          g_strstrip(card_short_name);
+        }
+
+        // Extract description (after the colon and dash)
+        gchar *desc_start = strstr(line, " - ");
+        gchar *description = desc_start ? g_strdup(desc_start + 3) : NULL;
+
+        // Create device entries - use plughw for better compatibility
+        gchar *device_id = g_strdup_printf("alsa:plughw:%d,0", card_num);
+
+        // Create short display name
+        gchar *display_name;
+        if (description && strlen(description) > 0)
+        {
+          // Truncate description if too long
+          if (strlen(description) > 30)
+            description[30] = '\0';
+          display_name = g_strdup_printf("%d: %s", card_num, description);
+        }
+        else if (card_short_name)
+        {
+          display_name = g_strdup_printf("%d: %s", card_num, card_short_name);
+        }
+        else
+        {
+          display_name = g_strdup_printf("Card %d", card_num);
+        }
+
+        g_ptr_array_add(devices, device_id);
+        g_ptr_array_add(names, display_name);
+
+        g_free(card_short_name);
+        g_free(description);
+      }
+      g_free(line);
+    }
+    g_strfreev(lines);
+    g_free(cards_content);
+  }
+
+  // Convert to arrays
+  list->count = devices->len;
+  list->devices = g_new0(char*, list->count + 1);
+  list->names = g_new0(char*, list->count + 1);
+
+  for (guint i = 0; i < devices->len; i++)
+  {
+    list->devices[i] = (char*)g_ptr_array_index(devices, i);
+    list->names[i] = (char*)g_ptr_array_index(names, i);
+  }
+
+  g_ptr_array_free(devices, FALSE);
+  g_ptr_array_free(names, FALSE);
+}
 
 // Helper to find index of audio device in list
 static guint
-find_audio_device_index(const char **devices, const char *current)
+find_audio_device_index(const AudioDeviceList *list, const char *current)
 {
   if (current == nullptr || current[0] == '\0')
-    return 0;  // Default to first (System Default)
+    return 0;  // Default to first
 
-  for (guint i = 0; devices[i] != nullptr; i++)
+  for (int i = 0; i < list->count; i++)
   {
-    if (g_strcmp0(devices[i], current) == 0)
+    if (g_strcmp0(list->devices[i], current) == 0)
       return i;
   }
   return 0;  // Default to first if not found
+}
+
+// Helper to create GtkStringList from AudioDeviceList names
+static GtkStringList *
+create_device_string_list(const AudioDeviceList *list)
+{
+  // Need NULL-terminated array for gtk_string_list_new
+  return gtk_string_list_new((const char * const *)list->names);
 }
 
 // Callback when mic device changes
@@ -510,9 +620,11 @@ on_mic_device_changed(GObject *combo, GParamSpec *pspec, gpointer user_data)
 {
   QtelPreferences *self = QTEL_PREFERENCES(user_data);
   guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(combo));
-  // Use the actual device value, not the display name
-  const char *device = audio_devices[selected];
-  g_settings_set_string(self->settings, "mic-audio-device", device);
+  if (selected < (guint)mic_devices.count)
+  {
+    const char *device = mic_devices.devices[selected];
+    g_settings_set_string(self->settings, "mic-audio-device", device);
+  }
 }
 
 // Callback when speaker device changes
@@ -521,9 +633,11 @@ on_spkr_device_changed(GObject *combo, GParamSpec *pspec, gpointer user_data)
 {
   QtelPreferences *self = QTEL_PREFERENCES(user_data);
   guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(combo));
-  // Use the actual device value, not the display name
-  const char *device = audio_devices[selected];
-  g_settings_set_string(self->settings, "spkr-audio-device", device);
+  if (selected < (guint)spkr_devices.count)
+  {
+    const char *device = spkr_devices.devices[selected];
+    g_settings_set_string(self->settings, "spkr-audio-device", device);
+  }
 }
 
 // Stop speaker test and clean up
@@ -560,7 +674,7 @@ on_spkr_test_clicked(GtkButton *button, gpointer user_data)
 
   // Get current speaker device
   guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(self->spkr_device_entry));
-  const char *device = audio_devices[selected];
+  const char *device = (selected < (guint)spkr_devices.count) ? spkr_devices.devices[selected] : "alsa:default";
 
   g_message("Testing speaker device: %s", device);
 
@@ -749,7 +863,7 @@ start_mic_playback(QtelPreferences *self)
 
   // Get speaker device
   guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(self->spkr_device_entry));
-  const char *device = audio_devices[selected];
+  const char *device = (selected < (guint)spkr_devices.count) ? spkr_devices.devices[selected] : "alsa:default";
 
   // Create speaker output
   self->test_spkr_audio = new AudioIO(device, 0);
@@ -799,7 +913,7 @@ on_mic_test_clicked(GtkButton *button, gpointer user_data)
 
   // Get current mic device
   guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(self->mic_device_entry));
-  const char *device = audio_devices[selected];
+  const char *device = (selected < (guint)mic_devices.count) ? mic_devices.devices[selected] : "alsa:default";
 
   g_message("Testing microphone device: %s", device);
 
@@ -852,6 +966,16 @@ create_audio_page(QtelPreferences *self)
   adw_preferences_page_set_title(page, "Audio");
   adw_preferences_page_set_icon_name(page, "audio-card-symbolic");
 
+  // Enumerate available audio devices
+  enumerate_alsa_devices(&mic_devices, TRUE);   // Capture devices
+  enumerate_alsa_devices(&spkr_devices, FALSE); // Playback devices
+
+  g_message("Enumerated %d audio devices", mic_devices.count);
+  for (int i = 0; i < mic_devices.count; i++)
+  {
+    g_message("  Device %d: %s (%s)", i, mic_devices.names[i], mic_devices.devices[i]);
+  }
+
   // Devices group
   AdwPreferencesGroup *devices_group = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
   adw_preferences_group_set_title(devices_group, "Audio Devices");
@@ -860,7 +984,7 @@ create_audio_page(QtelPreferences *self)
     "PulseAudio or PipeWire is recommended for best compatibility.");
 
   // Microphone device dropdown
-  GtkStringList *mic_model = gtk_string_list_new(audio_device_names);
+  GtkStringList *mic_model = create_device_string_list(&mic_devices);
   self->mic_device_entry = adw_combo_row_new();
   adw_combo_row_set_model(ADW_COMBO_ROW(self->mic_device_entry),
                            G_LIST_MODEL(mic_model));
@@ -871,7 +995,7 @@ create_audio_page(QtelPreferences *self)
 
   // Find and select current mic device
   const gchar *current_mic = g_settings_get_string(self->settings, "mic-audio-device");
-  guint mic_index = find_audio_device_index(audio_devices, current_mic);
+  guint mic_index = find_audio_device_index(&mic_devices, current_mic);
   adw_combo_row_set_selected(ADW_COMBO_ROW(self->mic_device_entry), mic_index);
 
   g_signal_connect(self->mic_device_entry, "notify::selected",
@@ -879,7 +1003,7 @@ create_audio_page(QtelPreferences *self)
   adw_preferences_group_add(devices_group, self->mic_device_entry);
 
   // Speaker device dropdown
-  GtkStringList *spkr_model = gtk_string_list_new(audio_device_names);
+  GtkStringList *spkr_model = create_device_string_list(&spkr_devices);
   self->spkr_device_entry = adw_combo_row_new();
   adw_combo_row_set_model(ADW_COMBO_ROW(self->spkr_device_entry),
                            G_LIST_MODEL(spkr_model));
@@ -890,7 +1014,7 @@ create_audio_page(QtelPreferences *self)
 
   // Find and select current speaker device
   const gchar *current_spkr = g_settings_get_string(self->settings, "spkr-audio-device");
-  guint spkr_index = find_audio_device_index(audio_devices, current_spkr);
+  guint spkr_index = find_audio_device_index(&spkr_devices, current_spkr);
   adw_combo_row_set_selected(ADW_COMBO_ROW(self->spkr_device_entry), spkr_index);
 
   g_signal_connect(self->spkr_device_entry, "notify::selected",
