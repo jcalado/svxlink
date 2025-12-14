@@ -189,18 +189,55 @@ on_disconnect_clicked(GtkButton *button, gpointer user_data)
 }
 
 static void
+update_ptt_visual(QtelCallDialog *self)
+{
+  if (self->ptt_pressed)
+  {
+    gtk_widget_add_css_class(self->ptt_button, "ptt-active");
+  }
+  else
+  {
+    gtk_widget_remove_css_class(self->ptt_button, "ptt-active");
+  }
+}
+
+static void
 on_ptt_pressed(GtkGestureClick *gesture, int n_press, double x, double y,
                gpointer user_data)
 {
   QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
 
-  // In toggle mode, let the toggled signal handle everything
-  if (self->ptt_toggle_mode)
-    return;
+  // Check for Ctrl modifier to enter toggle mode
+  GdkModifierType state = gtk_event_controller_get_current_event_state(
+    GTK_EVENT_CONTROLLER(gesture));
 
-  // Set our internal pressed flag for push-to-talk
-  self->ptt_pressed = TRUE;
-  g_message("PTT pressed (push-to-talk)");
+  if (state & GDK_CONTROL_MASK)
+  {
+    // Ctrl+click: toggle mode - toggle the state and set toggle flag
+    self->ptt_pressed = !self->ptt_pressed;
+    self->ptt_toggle_mode = TRUE;  // Mark that we're in toggled state
+    g_message("PTT toggled: %s", self->ptt_pressed ? "ON" : "OFF");
+  }
+  else
+  {
+    // Normal click: push-to-talk mode - activate on press
+    // Only if not currently in toggle-on state
+    if (!self->ptt_toggle_mode || !self->ptt_pressed)
+    {
+      self->ptt_pressed = TRUE;
+      self->ptt_toggle_mode = FALSE;  // This is push-to-talk, not toggle
+      g_message("PTT pressed (push-to-talk)");
+    }
+    else
+    {
+      // Click while in toggled-on state - turn it off
+      self->ptt_pressed = FALSE;
+      self->ptt_toggle_mode = FALSE;
+      g_message("PTT toggle OFF (click to exit toggle mode)");
+    }
+  }
+
+  update_ptt_visual(self);
   check_transmit(self);
 }
 
@@ -210,37 +247,20 @@ on_ptt_released(GtkGestureClick *gesture, int n_press, double x, double y,
 {
   QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
 
-  // In toggle mode, let the toggled signal handle everything
+  g_message("PTT release event, toggle_mode=%d, pressed=%d",
+            self->ptt_toggle_mode, self->ptt_pressed);
+
+  // If we're in toggle mode (Ctrl+click was used), don't release on mouse up
   if (self->ptt_toggle_mode)
-    return;
-
-  // Clear our internal pressed flag for push-to-talk
-  self->ptt_pressed = FALSE;
-  g_message("PTT released (push-to-talk)");
-  check_transmit(self);
-}
-
-static void
-on_ptt_toggled(GtkToggleButton *button, gpointer user_data)
-{
-  QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
-
-  // Only handle in toggle mode
-  if (!self->ptt_toggle_mode)
   {
-    // In push-to-talk mode, reset toggle button state to match our pressed flag
-    // This prevents the toggle button from interfering
-    gboolean active = gtk_toggle_button_get_active(button);
-    if (active != self->ptt_pressed)
-    {
-      g_signal_handlers_block_by_func(button, (gpointer)on_ptt_toggled, self);
-      gtk_toggle_button_set_active(button, self->ptt_pressed);
-      g_signal_handlers_unblock_by_func(button, (gpointer)on_ptt_toggled, self);
-    }
+    g_message("PTT in toggle mode - ignoring release");
     return;
   }
 
-  g_message("PTT toggled: %s", gtk_toggle_button_get_active(button) ? "ON" : "OFF");
+  // Normal push-to-talk mode - deactivate on release
+  self->ptt_pressed = FALSE;
+  g_message("PTT released (push-to-talk)");
+  update_ptt_visual(self);
   check_transmit(self);
 }
 
@@ -437,18 +457,8 @@ on_dns_results_ready(DnsLookup &dns, QtelCallDialog *self)
 static void
 check_transmit(QtelCallDialog *self)
 {
-  // Determine if PTT is active based on mode
-  gboolean ptt_active;
-  if (self->ptt_toggle_mode)
-  {
-    // In toggle mode, use the toggle button state
-    ptt_active = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(self->ptt_button));
-  }
-  else
-  {
-    // In push-to-talk mode, use our internal pressed flag
-    ptt_active = self->ptt_pressed;
-  }
+  // PTT state is tracked in ptt_pressed flag (works for both push-to-talk and toggle modes)
+  gboolean ptt_active = self->ptt_pressed;
 
   // Check if VOX is enabled and active
   gboolean vox_active = self->vox->enabled() && (self->vox->state() != VoxState::IDLE);
@@ -919,6 +929,7 @@ add_css_provider(void)
     ".indicator { padding: 8px 16px; border-radius: 6px; "
     "border: 1px solid @borders; }\n"
     ".ptt-button { min-height: 60px; min-width: 200px; }\n"
+    ".ptt-active { background-color: #e01b24; color: white; }\n"
   );
   gtk_style_context_add_provider_for_display(
     gdk_display_get_default(),
@@ -1119,20 +1130,21 @@ create_ptt_button(QtelCallDialog *self)
   gtk_widget_set_margin_top(box, 12);
   gtk_widget_set_margin_bottom(box, 12);
 
-  self->ptt_button = gtk_toggle_button_new_with_label("PTT");
+  // Use a regular button instead of toggle button to avoid interference
+  // between toggle behavior and push-to-talk gesture handling
+  self->ptt_button = gtk_button_new_with_label("PTT");
   gtk_widget_add_css_class(self->ptt_button, "ptt-button");
   gtk_widget_add_css_class(self->ptt_button, "suggested-action");
   gtk_widget_set_sensitive(self->ptt_button, FALSE);
 
-  // Press/release gesture for non-toggle mode
+  // Press/release gesture for push-to-talk and Ctrl+click for toggle
+  // Use CAPTURE phase to get events before the button's internal gesture
   GtkGesture *press = gtk_gesture_click_new();
   gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(press), GDK_BUTTON_PRIMARY);
+  gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(press), GTK_PHASE_CAPTURE);
   g_signal_connect(press, "pressed", G_CALLBACK(on_ptt_pressed), self);
   g_signal_connect(press, "released", G_CALLBACK(on_ptt_released), self);
   gtk_widget_add_controller(self->ptt_button, GTK_EVENT_CONTROLLER(press));
-
-  // Toggle signal
-  g_signal_connect(self->ptt_button, "toggled", G_CALLBACK(on_ptt_toggled), self);
 
   gtk_box_append(GTK_BOX(box), self->ptt_button);
 
