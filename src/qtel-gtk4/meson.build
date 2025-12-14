@@ -88,10 +88,28 @@ else
   svxlink_libs = [asynccore_dep, asyncglib_dep, asyncaudio_dep, echolib_dep]
 endif
 
+# Get git revision
+git = find_program('git', required: false)
+if git.found()
+  git_rev = run_command(git, 'rev-parse', '--short', 'HEAD', check: false)
+  if git_rev.returncode() == 0
+    git_revision = git_rev.stdout().strip()
+  else
+    git_revision = 'unknown'
+  endif
+  git_dirty = run_command(git, 'diff', '--quiet', check: false)
+  if git_dirty.returncode() != 0
+    git_revision = git_revision + '-dirty'
+  endif
+else
+  git_revision = 'unknown'
+endif
+
 # Configuration data
 config_data = configuration_data()
 config_data.set_quoted('APP_ID', app_id)
 config_data.set_quoted('APP_VERSION', meson.project_version())
+config_data.set_quoted('APP_GIT_REV', git_revision)
 config_data.set_quoted('GETTEXT_PACKAGE', meson.project_name())
 config_data.set_quoted('LOCALEDIR', localedir)
 config_data.set_quoted('DATADIR', datadir)
