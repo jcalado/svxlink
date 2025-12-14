@@ -822,19 +822,15 @@ on_mic_test_clicked(GtkButton *button, gpointer user_data)
     return;
   }
 
-  // Create FIFO buffer for continuous audio streaming
-  // This allows the audio system to push samples continuously
-  self->mic_test_fifo = new AudioFifo(2048);
-
-  // Create level meter (with recording) and connect via FIFO
+  // Create level meter (with recording) connected directly to mic
   // Use the actual sample rate from the audio device
   int sample_rate = self->test_mic_audio->sampleRate();
   g_message("Audio device sample rate: %d Hz", sample_rate);
+
   self->level_meter = new LevelMeter(3, sample_rate);  // 3 seconds max recording
 
-  // Connect: mic -> fifo -> level_meter
-  self->test_mic_audio->registerSink(self->mic_test_fifo);
-  self->mic_test_fifo->registerSink(self->level_meter);
+  // Connect: mic -> level_meter (no FIFO - simpler chain)
+  self->test_mic_audio->registerSink(self->level_meter);
 
   self->mic_testing = true;
   self->mic_playing = false;
