@@ -835,6 +835,14 @@ qtel_preferences_init(QtelPreferences *self)
 {
   self->settings = g_settings_new(APP_ID);
 
+  // Initialize audio test state
+  self->test_spkr_audio = nullptr;
+  self->test_mic_audio = nullptr;
+  self->tone_gen = nullptr;
+  self->level_meter = nullptr;
+  self->mic_testing = false;
+  self->mic_test_timeout_id = 0;
+
   gtk_window_set_default_size(GTK_WINDOW(self), 600, 700);
 
   // Add pages
