@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="qtel-gtk4">
+
+  <schema id="org.svxlink.Qtel" path="/org/svxlink/qtel/">
+
+    <!-- User Information -->
+    <key name="callsign" type="s">
+      <default>''</default>
+      <summary>EchoLink Callsign</summary>
+      <description>Your amateur radio callsign registered with EchoLink.</description>
+    </key>
+
+    <key name="password" type="s">
+      <default>''</default>
+      <summary>EchoLink Password</summary>
+      <description>Your EchoLink account password.</description>
+    </key>
+
+    <key name="name" type="s">
+      <default>''</default>
+      <summary>Operator Name</summary>
+      <description>Your name as it will appear to other operators.</description>
+    </key>
+
+    <key name="location" type="s">
+      <default>''</default>
+      <summary>Location Description</summary>
+      <description>A description of your location (city, state/province, country).</description>
+    </key>
+
+    <key name="info" type="s">
+      <default>''</default>
+      <summary>Info Message</summary>
+      <description>Additional information about your station.</description>
+    </key>
+
+    <!-- Network Settings -->
+    <key name="directory-servers" type="s">
+      <default>'nasouth.echolink.org naeast.echolink.org nawest.echolink.org servers.echolink.org'</default>
+      <summary>Directory Servers</summary>
+      <description>Space-separated list of EchoLink directory servers.</description>
+    </key>
+
+    <key name="list-refresh-time" type="i">
+      <default>5</default>
+      <range min="1" max="60"/>
+      <summary>List Refresh Time</summary>
+      <description>How often to refresh the station list, in minutes.</description>
+    </key>
+
+    <key name="start-as-busy" type="b">
+      <default>false</default>
+      <summary>Start as Busy</summary>
+      <description>Start the application in busy mode.</description>
+    </key>
+
+    <key name="bind-address" type="s">
+      <default>''</default>
+      <summary>Bind Address</summary>
+      <description>Local IP address to bind to. Leave empty for automatic.</description>
+    </key>
+
+    <!-- Proxy Settings -->
+    <key name="proxy-enabled" type="b">
+      <default>false</default>
+      <summary>Enable Proxy</summary>
+      <description>Enable EchoLink proxy server connection.</description>
+    </key>
+
+    <key name="proxy-server" type="s">
+      <default>''</default>
+      <summary>Proxy Server</summary>
+      <description>Hostname or IP address of the EchoLink proxy server.</description>
+    </key>
+
+    <key name="proxy-port" type="q">
+      <default>8100</default>
+      <summary>Proxy Port</summary>
+      <description>TCP port of the EchoLink proxy server.</description>
+    </key>
+
+    <key name="proxy-password" type="s">
+      <default>''</default>
+      <summary>Proxy Password</summary>
+      <description>Password for the EchoLink proxy server.</description>
+    </key>
+
+    <!-- Audio Settings -->
+    <key name="mic-audio-device" type="s">
+      <default>'alsa:default'</default>
+      <summary>Microphone Audio Device</summary>
+      <description>Audio device to use for microphone input.</description>
+    </key>
+
+    <key name="spkr-audio-device" type="s">
+      <default>'alsa:default'</default>
+      <summary>Speaker Audio Device</summary>
+      <description>Audio device to use for speaker output.</description>
+    </key>
+
+    <key name="use-full-duplex" type="b">
+      <default>false</default>
+      <summary>Full Duplex</summary>
+      <description>Enable simultaneous transmit and receive.</description>
+    </key>
+
+    <key name="connect-sound" type="s">
+      <default>''</default>
+      <summary>Connect Sound</summary>
+      <description>Sound file to play when a connection is established.</description>
+    </key>
+
+    <key name="card-sample-rate" type="i">
+      <default>48000</default>
+      <summary>Sample Rate</summary>
+      <description>Audio card sample rate in Hz.</description>
+    </key>
+
+    <!-- QSO Settings -->
+    <key name="chat-encoding" type="s">
+      <default>'UTF-8'</default>
+      <summary>Chat Encoding</summary>
+      <description>Character encoding for chat messages.</description>
+    </key>
+
+    <!-- VOX Settings -->
+    <key name="vox-enabled" type="b">
+      <default>false</default>
+      <summary>VOX Enabled</summary>
+      <description>Enable voice-operated transmission.</description>
+    </key>
+
+    <key name="vox-threshold" type="i">
+      <default>-30</default>
+      <range min="-60" max="0"/>
+      <summary>VOX Threshold</summary>
+      <description>VOX activation threshold in dB.</description>
+    </key>
+
+    <key name="vox-delay" type="i">
+      <default>1000</default>
+      <range min="0" max="3000"/>
+      <summary>VOX Delay</summary>
+      <description>VOX hang time in milliseconds.</description>
+    </key>
+
+    <!-- Bookmarks -->
+    <key name="bookmarks" type="as">
+      <default>[]</default>
+      <summary>Bookmarks</summary>
+      <description>List of bookmarked station callsigns.</description>
+    </key>
+
+    <!-- Last Connection -->
+    <key name="connect-to-ip" type="s">
+      <default>''</default>
+      <summary>Connect to IP</summary>
+      <description>Last IP address or hostname connected to.</description>
+    </key>
+
+    <!-- Window State -->
+    <key name="window-width" type="i">
+      <default>900</default>
+      <summary>Window Width</summary>
+      <description>Main window width in pixels.</description>
+    </key>
+
+    <key name="window-height" type="i">
+      <default>600</default>
+      <summary>Window Height</summary>
+      <description>Main window height in pixels.</description>
+    </key>
+
+    <key name="window-maximized" type="b">
+      <default>false</default>
+      <summary>Window Maximized</summary>
+      <description>Whether the main window is maximized.</description>
+    </key>
+
+  </schema>
+
+</schemalist>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Repeater icon - radio tower -->
+  <path d="M 8 2 L 5 14 L 11 14 Z" fill="currentColor"/>
+  <rect x="7" y="0" width="2" height="4" fill="currentColor"/>
+  <!-- Antenna waves -->
+  <path d="M 4 3 A 4 4 0 0 1 8 1" stroke="currentColor" stroke-width="1.2" fill="none"/>
+  <path d="M 12 3 A 4 4 0 0 0 8 1" stroke="currentColor" stroke-width="1.2" fill="none"/>
+  <!-- Base -->
+  <rect x="3" y="13" width="10" height="2" fill="currentColor"/>
+</svg>

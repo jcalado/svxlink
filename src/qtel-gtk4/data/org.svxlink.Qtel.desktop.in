@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Qtel
+GenericName=EchoLink Client
+GenericName[sv]=EchoLink-klient
+Comment=Connect to EchoLink amateur radio network
+Comment[sv]=Anslut till EchoLink amatörradionätverk
+Exec=qtel-gtk4 %U
+Icon=org.svxlink.Qtel
+Terminal=false
+Type=Application
+Categories=Audio;Network;HamRadio;GTK;
+Keywords=echolink;ham;radio;amateur;voip;ptt;
+StartupNotify=true
