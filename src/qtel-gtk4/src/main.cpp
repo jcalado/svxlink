@@ -34,6 +34,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 int main(int argc, char *argv[])
 {
+  // Print version info at startup
+  g_message("Qtel GTK4 %s (git: %s)", APP_VERSION, APP_GIT_REV);
+
   // Set up localization
   setlocale(LC_ALL, "");
   bindtextdomain(GETTEXT_PACKAGE, LOCALEDIR);
