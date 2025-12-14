@@ -30,6 +30,10 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #include "qtel-config.h"
 #include "settings.h"
 
+#include <AsyncAudioIO.h>
+
+using namespace Async;
+
 struct _QtelApplication
 {
   AdwApplication parent_instance;
@@ -55,6 +59,37 @@ qtel_application_activate(GApplication *app)
   gtk_window_present(window);
 }
 
+// Internal sample rate used by svxlink audio system
+#ifndef INTERNAL_SAMPLE_RATE
+#define INTERNAL_SAMPLE_RATE 16000
+#endif
+
+static void
+setup_audio_params(int sample_rate)
+{
+  // Configure audio based on sample rate (same as Qt version)
+  if (sample_rate == 48000)
+  {
+    AudioIO::setBlocksize(1024);
+    AudioIO::setBlockCount(4);
+  }
+  else if (sample_rate == 16000)
+  {
+    AudioIO::setBlocksize(512);
+    AudioIO::setBlockCount(2);
+  }
+#if INTERNAL_SAMPLE_RATE <= 8000
+  else if (sample_rate == 8000)
+  {
+    AudioIO::setBlocksize(256);
+    AudioIO::setBlockCount(2);
+  }
+#endif
+  AudioIO::setSampleRate(sample_rate);
+  // Use mono audio - the AudioIO system will duplicate to both stereo channels
+  AudioIO::setChannels(1);
+}
+
 static void
 qtel_application_startup(GApplication *app)
 {
@@ -64,6 +99,14 @@ qtel_application_startup(GApplication *app)
 
   // Initialize settings
   self->settings = settings_new();
+
+  // Set up audio parameters - read sample rate from settings
+  GSettings *gsettings = g_settings_new(APP_ID);
+  int sample_rate = g_settings_get_int(gsettings, "card-sample-rate");
+  if (sample_rate <= 0)
+    sample_rate = INTERNAL_SAMPLE_RATE;
+  setup_audio_params(sample_rate);
+  g_object_unref(gsettings);
 
   // Set up application actions
   static const GActionEntry app_actions[] = {

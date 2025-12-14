@@ -31,7 +31,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #include <AsyncAudioIO.h>
 #include <AsyncAudioSource.h>
 #include <AsyncAudioSink.h>
+#include <AsyncAudioFifo.h>
 #include <cmath>
+#include <vector>
 
 using namespace Async;
 
@@ -43,6 +45,7 @@ using namespace Async;
 // Forward declarations for audio test classes
 class ToneGenerator;
 class LevelMeter;
+class AudioPlayer;
 
 struct _QtelPreferences
 {
@@ -88,7 +91,11 @@ struct _QtelPreferences
   AudioIO *test_mic_audio;
   ToneGenerator *tone_gen;
   LevelMeter *level_meter;
+  AudioPlayer *audio_player;
+  AudioFifo *mic_test_fifo;  // Buffer for continuous mic streaming
   bool mic_testing;
+  bool mic_playing;  // True when playing back recorded audio
+  guint mic_playback_timeout_id;
 
   // VOX widgets
   GtkWidget *vox_enable_switch;
@@ -159,15 +166,26 @@ private:
   int m_samples_left;
 };
 
-// Simple level meter for audio input testing
+// Simple level meter for audio input testing, also records samples for playback
 class LevelMeter : public AudioSink
 {
 public:
-  LevelMeter() : m_level(0.0f), m_peak(0.0f) {}
+  LevelMeter(int max_seconds = 5, int sample_rate = 48000)
+    : m_level(0.0f), m_peak(0.0f), m_recording(true), m_sample_rate(sample_rate)
+  {
+    // Reserve space for max_seconds of audio at the given sample rate
+    m_buffer.reserve(sample_rate * max_seconds);
+    g_message("LevelMeter: reserving for %d seconds at %d Hz = %d samples",
+              max_seconds, sample_rate, sample_rate * max_seconds);
+  }
 
   float level() const { return m_level; }
   float peak() const { return m_peak; }
   void resetPeak() { m_peak = 0.0f; }
+  void setRecording(bool recording) { m_recording = recording; }
+  void clearBuffer() { m_buffer.clear(); }
+  const std::vector<float>& getBuffer() const { return m_buffer; }
+  int sampleRate() const { return m_sample_rate; }
 
   int writeSamples(const float *samples, int count) override
   {
@@ -179,6 +197,12 @@ public:
       sum += abs_sample * abs_sample;
       if (abs_sample > max_sample)
         max_sample = abs_sample;
+
+      // Record samples if enabled and buffer not full
+      if (m_recording && m_buffer.size() < m_buffer.capacity())
+      {
+        m_buffer.push_back(samples[i]);
+      }
     }
     // RMS level
     m_level = std::sqrt(sum / count);
@@ -195,6 +219,86 @@ public:
 private:
   float m_level;
   float m_peak;
+  bool m_recording;
+  int m_sample_rate;
+  std::vector<float> m_buffer;
+};
+
+// Audio player for playing back recorded samples
+class AudioPlayer : public AudioSource
+{
+public:
+  AudioPlayer() : m_pos(0), m_flushed(false), m_sample_rate(48000) {}
+
+  void setBuffer(const std::vector<float>& buffer, int sample_rate = 48000)
+  {
+    m_buffer = buffer;
+    m_pos = 0;
+    m_flushed = false;
+    m_sample_rate = sample_rate;
+    g_message("AudioPlayer: buffer set with %zu samples at %d Hz (%.2f seconds)",
+              m_buffer.size(), sample_rate, m_buffer.size() / (float)sample_rate);
+  }
+
+  void start()
+  {
+    m_pos = 0;
+    m_flushed = false;
+    resumeOutput();
+  }
+
+  bool isPlaying() const { return !m_flushed; }
+
+  void resumeOutput() override
+  {
+    if (m_pos >= m_buffer.size())
+    {
+      if (!m_flushed)
+      {
+        g_message("AudioPlayer: flushing after playing %zu samples", m_pos);
+        m_flushed = true;
+        sinkFlushSamples();
+      }
+      return;
+    }
+
+    const int BLOCK_SIZE = 512;
+    float buf[BLOCK_SIZE];
+
+    while (m_pos < m_buffer.size())
+    {
+      int to_write = std::min(BLOCK_SIZE, static_cast<int>(m_buffer.size() - m_pos));
+      for (int i = 0; i < to_write; i++)
+      {
+        buf[i] = m_buffer[m_pos + i];
+      }
+      int written = sinkWriteSamples(buf, to_write);
+      if (written == 0)
+      {
+        // Sink is full, will be called again via resumeOutput
+        return;
+      }
+      m_pos += written;  // Only advance by actually written samples
+    }
+
+    if (m_pos >= m_buffer.size() && !m_flushed)
+    {
+      g_message("AudioPlayer: flushing after playing %zu samples", m_pos);
+      m_flushed = true;
+      sinkFlushSamples();
+    }
+  }
+
+  void allSamplesFlushed() override
+  {
+    g_message("AudioPlayer: all samples flushed");
+  }
+
+private:
+  std::vector<float> m_buffer;
+  size_t m_pos;
+  bool m_flushed;
+  int m_sample_rate;
 };
 
 // Forward declarations
@@ -498,16 +602,25 @@ on_spkr_test_clicked(GtkButton *button, gpointer user_data)
   }, self);
 }
 
-// Stop microphone test and clean up
+// Forward declaration for playback function
+static void start_mic_playback(QtelPreferences *self);
+
+// Stop microphone test and clean up completely
 static void
 stop_mic_test(QtelPreferences *self)
 {
   self->mic_testing = false;
+  self->mic_playing = false;
 
   if (self->mic_test_timeout_id > 0)
   {
     g_source_remove(self->mic_test_timeout_id);
     self->mic_test_timeout_id = 0;
+  }
+  if (self->mic_playback_timeout_id > 0)
+  {
+    g_source_remove(self->mic_playback_timeout_id);
+    self->mic_playback_timeout_id = 0;
   }
   if (self->test_mic_audio)
   {
@@ -515,16 +628,32 @@ stop_mic_test(QtelPreferences *self)
     delete self->test_mic_audio;
     self->test_mic_audio = nullptr;
   }
+  if (self->test_spkr_audio && self->mic_playing)
+  {
+    self->test_spkr_audio->close();
+    delete self->test_spkr_audio;
+    self->test_spkr_audio = nullptr;
+  }
+  if (self->mic_test_fifo)
+  {
+    delete self->mic_test_fifo;
+    self->mic_test_fifo = nullptr;
+  }
   if (self->level_meter)
   {
     delete self->level_meter;
     self->level_meter = nullptr;
   }
+  if (self->audio_player)
+  {
+    delete self->audio_player;
+    self->audio_player = nullptr;
+  }
   gtk_level_bar_set_value(GTK_LEVEL_BAR(self->mic_level_bar), 0.0);
-  gtk_button_set_label(GTK_BUTTON(self->mic_test_button), "Test");
+  gtk_button_set_label(GTK_BUTTON(self->mic_test_button), "Record");
 }
 
-// Update microphone level display
+// Update microphone level display during recording
 static gboolean
 update_mic_level(gpointer user_data)
 {
@@ -548,16 +677,123 @@ update_mic_level(gpointer user_data)
   return G_SOURCE_CONTINUE;
 }
 
+// Auto-stop recording after 3 seconds and start playback
+static gboolean
+auto_stop_recording(gpointer user_data)
+{
+  QtelPreferences *self = QTEL_PREFERENCES(user_data);
+
+  if (self->mic_testing && !self->mic_playing)
+  {
+    g_message("Recording complete, starting playback");
+    start_mic_playback(self);
+  }
+
+  return G_SOURCE_REMOVE;
+}
+
+// Check if playback is complete
+static gboolean
+check_playback_complete(gpointer user_data)
+{
+  QtelPreferences *self = QTEL_PREFERENCES(user_data);
+
+  if (!self->mic_playing)
+  {
+    self->mic_playback_timeout_id = 0;
+    return G_SOURCE_REMOVE;
+  }
+
+  // Check if playback is done
+  if (self->audio_player && !self->audio_player->isPlaying())
+  {
+    g_message("Playback complete");
+    stop_mic_test(self);
+    self->mic_playback_timeout_id = 0;
+    return G_SOURCE_REMOVE;
+  }
+
+  return G_SOURCE_CONTINUE;
+}
+
+// Start playback of recorded audio
+static void
+start_mic_playback(QtelPreferences *self)
+{
+  // Stop recording
+  if (self->mic_test_timeout_id > 0)
+  {
+    g_source_remove(self->mic_test_timeout_id);
+    self->mic_test_timeout_id = 0;
+  }
+  self->mic_testing = false;
+
+  // Close mic input
+  if (self->test_mic_audio)
+  {
+    self->test_mic_audio->close();
+    delete self->test_mic_audio;
+    self->test_mic_audio = nullptr;
+  }
+
+  // Check if we have recorded audio
+  if (!self->level_meter || self->level_meter->getBuffer().empty())
+  {
+    g_warning("No audio recorded");
+    stop_mic_test(self);
+    return;
+  }
+
+  g_message("Recorded %zu samples, starting playback",
+            self->level_meter->getBuffer().size());
+
+  // Get speaker device
+  guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(self->spkr_device_entry));
+  const char *device = audio_devices[selected];
+
+  // Create speaker output
+  self->test_spkr_audio = new AudioIO(device, 0);
+  if (!self->test_spkr_audio->open(AudioIO::MODE_WR))
+  {
+    g_warning("Failed to open speaker device %s for playback", device);
+    stop_mic_test(self);
+    return;
+  }
+
+  // Create audio player and copy recorded buffer
+  self->audio_player = new AudioPlayer();
+  self->audio_player->setBuffer(self->level_meter->getBuffer(),
+                                 self->level_meter->sampleRate());
+  self->audio_player->registerSink(self->test_spkr_audio);
+
+  self->mic_playing = true;
+  gtk_button_set_label(GTK_BUTTON(self->mic_test_button), "Playing...");
+  gtk_level_bar_set_value(GTK_LEVEL_BAR(self->mic_level_bar), 0.0);
+
+  // Start playback
+  self->audio_player->start();
+
+  // Monitor playback completion
+  self->mic_playback_timeout_id = g_timeout_add(100, check_playback_complete, self);
+}
+
 // Callback when microphone test button is clicked
 static void
 on_mic_test_clicked(GtkButton *button, gpointer user_data)
 {
   QtelPreferences *self = QTEL_PREFERENCES(user_data);
 
-  // If already testing, stop
-  if (self->mic_testing)
+  // If playing, stop everything
+  if (self->mic_playing)
   {
     stop_mic_test(self);
+    return;
+  }
+
+  // If recording, stop and start playback
+  if (self->mic_testing)
+  {
+    start_mic_playback(self);
     return;
   }
 
@@ -586,17 +822,31 @@ on_mic_test_clicked(GtkButton *button, gpointer user_data)
     return;
   }
 
-  // Create level meter and connect to audio input
-  self->level_meter = new LevelMeter();
-  self->test_mic_audio->registerSink(self->level_meter);
+  // Create FIFO buffer for continuous audio streaming
+  // This allows the audio system to push samples continuously
+  self->mic_test_fifo = new AudioFifo(2048);
+
+  // Create level meter (with recording) and connect via FIFO
+  // Use the actual sample rate from the audio device
+  int sample_rate = self->test_mic_audio->sampleRate();
+  g_message("Audio device sample rate: %d Hz", sample_rate);
+  self->level_meter = new LevelMeter(3, sample_rate);  // 3 seconds max recording
+
+  // Connect: mic -> fifo -> level_meter
+  self->test_mic_audio->registerSink(self->mic_test_fifo);
+  self->mic_test_fifo->registerSink(self->level_meter);
 
   self->mic_testing = true;
+  self->mic_playing = false;
 
   // Update button label
-  gtk_button_set_label(GTK_BUTTON(button), "Stop");
+  gtk_button_set_label(GTK_BUTTON(button), "Recording...");
 
   // Start periodic level update
   self->mic_test_timeout_id = g_timeout_add(50, update_mic_level, self);
+
+  // Auto-stop recording after 3 seconds
+  g_timeout_add(3000, auto_stop_recording, self);
 }
 
 static AdwPreferencesPage *
@@ -707,7 +957,7 @@ create_audio_page(QtelPreferences *self)
   // Microphone test row with level meter
   AdwActionRow *mic_test_row = ADW_ACTION_ROW(adw_action_row_new());
   adw_preferences_row_set_title(ADW_PREFERENCES_ROW(mic_test_row), "Microphone Test");
-  adw_action_row_set_subtitle(mic_test_row, "Check input level (speak into mic)");
+  adw_action_row_set_subtitle(mic_test_row, "Records 3 seconds, then plays back");
 
   // Create horizontal box for level meter and button
   GtkWidget *mic_test_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -721,7 +971,7 @@ create_audio_page(QtelPreferences *self)
   gtk_box_append(GTK_BOX(mic_test_box), self->mic_level_bar);
 
   // Test button
-  self->mic_test_button = gtk_button_new_with_label("Test");
+  self->mic_test_button = gtk_button_new_with_label("Record");
   gtk_widget_add_css_class(self->mic_test_button, "suggested-action");
   g_signal_connect(self->mic_test_button, "clicked",
                    G_CALLBACK(on_mic_test_clicked), self);
@@ -840,8 +1090,12 @@ qtel_preferences_init(QtelPreferences *self)
   self->test_mic_audio = nullptr;
   self->tone_gen = nullptr;
   self->level_meter = nullptr;
+  self->audio_player = nullptr;
+  self->mic_test_fifo = nullptr;
   self->mic_testing = false;
+  self->mic_playing = false;
   self->mic_test_timeout_id = 0;
+  self->mic_playback_timeout_id = 0;
 
   gtk_window_set_default_size(GTK_WINDOW(self), 600, 700);
 

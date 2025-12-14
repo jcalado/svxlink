@@ -756,9 +756,11 @@ init_audio_pipeline(QtelCallDialog *self)
   AudioDecimator *down_sampler = new AudioDecimator(2, coeff_16_8, coeff_16_8_taps);
   self->tx_audio_splitter->addSink(down_sampler, true);
   self->ptt_valve = new AudioValve;
+  self->ptt_valve->setOpen(false);  // Start with PTT valve closed - no TX until PTT pressed
   down_sampler->registerSink(self->ptt_valve);
 #else
   self->ptt_valve = new AudioValve;
+  self->ptt_valve->setOpen(false);  // Start with PTT valve closed - no TX until PTT pressed
   self->tx_audio_splitter->addSink(self->ptt_valve);
 #endif
 
@@ -788,7 +790,12 @@ init_audio_pipeline(QtelCallDialog *self)
   }
   else
   {
-    // Half duplex: VOX disabled
+    // Half duplex: Start in RX mode, VOX disabled
+    // Open speaker for receiving audio
+    if (open_audio_device(self, AudioIO::MODE_WR))
+    {
+      self->rem_audio_valve->setOpen(true);
+    }
     gtk_widget_set_sensitive(self->vox_enable_switch, FALSE);
   }
 }
