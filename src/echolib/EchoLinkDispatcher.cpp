@@ -365,8 +365,20 @@ void Dispatcher::ctrlDataReceived(const IpAddress& ip, uint16_t port,
 void Dispatcher::audioDataReceived(const IpAddress& ip, uint16_t port,
                                    void *buf, int len)
 {
+  // Log audio packet arrival at dispatcher level (throttled)
+  static int disp_audio_count = 0;
+  static time_t last_disp_log = 0;
+  disp_audio_count++;
+  time_t now = time(nullptr);
+  if (now != last_disp_log)
+  {
+    cerr << "*** Dispatcher audio pkts: " << disp_audio_count << "/sec from " << ip << endl;
+    disp_audio_count = 0;
+    last_disp_log = now;
+  }
+
   unsigned char *recv_buf = static_cast<unsigned char *>(buf);
-  
+
   ConMap::iterator iter;
   iter = con_map.find(ip);
   if (iter != con_map.end())

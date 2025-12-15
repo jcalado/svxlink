@@ -625,6 +625,7 @@ inline void Qso::handleByePacket(unsigned char *buf, int len)
 
 inline void Qso::handleSdesPacket(unsigned char *buf, int len)
 {
+  cerr << "*** EchoLink SDES received, state=" << state << endl;
   char remote_id[256];
   if(parseSDES(remote_id, buf, RTCP_SDES_NAME))
   {
@@ -767,6 +768,19 @@ inline void Qso::handleNonAudioPacket(unsigned char *buf, int len)
 
 inline void Qso::handleAudioPacket(unsigned char *buf, int len)
 {
+  // Log audio packet reception (throttled to avoid spam)
+  static int audio_pkt_count = 0;
+  static time_t last_audio_log = 0;
+  audio_pkt_count++;
+  time_t now = time(nullptr);
+  if (now != last_audio_log)
+  {
+    cerr << "*** EchoLink audio packets: " << audio_pkt_count << " in last sec, rx_timer="
+         << (rx_indicator_timer ? "active" : "null") << endl;
+    audio_pkt_count = 0;
+    last_audio_log = now;
+  }
+
   VoicePacket *voice_packet = reinterpret_cast<VoicePacket*>(buf);
 
   RawPacket raw_packet = { voice_packet, len, receive_buffer };
@@ -805,6 +819,7 @@ inline void Qso::handleAudioPacket(unsigned char *buf, int len)
 
       if (rx_indicator_timer == 0)
       {
+        cerr << "*** EchoLink: Starting RX indicator (Speex), emitting isReceiving(true)" << endl;
         receiving_audio = true;
         isReceiving(true);
         rx_indicator_timer = new Timer(RX_INDICATOR_POLL_TIME,
@@ -813,7 +828,7 @@ inline void Qso::handleAudioPacket(unsigned char *buf, int len)
             mem_fun(*this, &Qso::checkRxActivity));
         rx_timeout_left = RX_INDICATOR_SLACK;
       }
-      
+
       float samples[160];
       for (int i = 0; i < 160; i++)
       {
@@ -836,8 +851,9 @@ inline void Qso::handleAudioPacket(unsigned char *buf, int len)
       gsm_decode(gsmh, voice_packet->data + frameno*33, sbuff);
       if (rx_indicator_timer == 0)
       {
+        cerr << "*** EchoLink: Starting RX indicator (GSM), emitting isReceiving(true)" << endl;
         receiving_audio = true;
-        isReceiving(true); 
+        isReceiving(true);
         rx_indicator_timer = new Timer(RX_INDICATOR_POLL_TIME,
                                        Timer::TYPE_PERIODIC);
         rx_indicator_timer->expired.connect(
@@ -887,6 +903,8 @@ bool Qso::sendSdesPacket(void)
 
 void Qso::sendKeepAlive(Timer *timer)
 {
+  cerr << "*** EchoLink keepalive: state=" << state
+       << " retry=" << connect_retry_cnt << endl;
   if ((state == STATE_CONNECTING) &&
       (++connect_retry_cnt == MAX_CONNECT_RETRY_CNT))
   {
@@ -915,6 +933,7 @@ void Qso::setState(State state)
 
 void Qso::connectionTimeout(Timer *timer)
 {
+  cerr << "*** EchoLink TIMEOUT: No SDES received for 50s, disconnecting!" << endl;
   cleanupConnection();
 } /* Qso::connectionTimeout */
 

@@ -181,7 +181,10 @@ settings_get_proxy_server(Settings *self)
 guint16
 settings_get_proxy_port(Settings *self)
 {
-  return static_cast<guint16>(g_settings_get_uint(self->gsettings, "proxy-port"));
+  GVariant *value = g_settings_get_value(self->gsettings, "proxy-port");
+  guint16 port = g_variant_get_uint16(value);
+  g_variant_unref(value);
+  return port;
 }
 
 const gchar *

@@ -38,6 +38,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #include <AsyncAudioSplitter.h>
 #include <AsyncAudioDecimator.h>
 #include <AsyncAudioInterpolator.h>
+// #include <AsyncAudioPacer.h>  // Not used - original Qtel doesn't use pacer
 #include <AsyncDnsLookup.h>
 #include <AsyncIpAddress.h>
 
@@ -137,6 +138,10 @@ struct _QtelCallDialog
 
   // Store the IP for creating connection
   IpAddress station_ip;
+
+  // Audio watchdog for XRUN recovery
+  guint audio_watchdog_id;
+  gint64 last_audio_activity;
 };
 
 G_DEFINE_TYPE(QtelCallDialog, qtel_call_dialog, ADW_TYPE_WINDOW)
@@ -371,7 +376,12 @@ on_vox_state_changed(VoxState state, gpointer user_data)
 static void
 on_qso_state_change(Qso::State state, QtelCallDialog *self)
 {
-  g_message("QSO state changed: %d", static_cast<int>(state));
+  const char *state_name =
+    state == Qso::STATE_CONNECTED ? "CONNECTED" :
+    state == Qso::STATE_CONNECTING ? "CONNECTING" :
+    state == Qso::STATE_BYE_RECEIVED ? "BYE_RECEIVED" :
+    state == Qso::STATE_DISCONNECTED ? "DISCONNECTED" : "UNKNOWN";
+  g_message("QSO state changed: %d (%s)", static_cast<int>(state), state_name);
 
   switch (state)
   {
@@ -426,10 +436,65 @@ on_qso_info_msg_received(const string &msg, QtelCallDialog *self)
   append_info(self, "\n------------------------------\n");
 }
 
+// Audio watchdog timer callback - detects stuck audio pipeline due to ALSA XRUN
+static gboolean
+audio_watchdog_callback(gpointer user_data)
+{
+  QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
+
+  // Only check if connected and valve is open (should be receiving)
+  if (self->state != CONNECTION_STATE_CONNECTED)
+    return G_SOURCE_CONTINUE;
+  if (!self->rem_audio_valve || !self->rem_audio_valve->isOpen())
+    return G_SOURCE_CONTINUE;
+  if (!self->spkr_audio_io)
+    return G_SOURCE_CONTINUE;
+
+  gint64 now = g_get_monotonic_time();
+
+  // If actively receiving, keep the watchdog timer reset
+  // (isReceiving signal only fires on state change, not continuously)
+  if (self->is_receiving)
+  {
+    self->last_audio_activity = now;
+    return G_SOURCE_CONTINUE;
+  }
+
+  gint64 idle_us = now - self->last_audio_activity;
+
+  // Log watchdog status every 10 seconds for debugging
+  static gint64 last_log_time = 0;
+  if (now - last_log_time > 10 * G_USEC_PER_SEC)
+  {
+    g_message("Audio watchdog: idle_sec=%lld, is_receiving=%d",
+              (long long)(idle_us / G_USEC_PER_SEC), self->is_receiving);
+    last_log_time = now;
+  }
+
+  // DISABLED: The watchdog reopen was causing audio issues
+  // The speaker close/reopen puts the audio pipeline in a bad state
+  // if (idle_us > 5 * G_USEC_PER_SEC && self->last_audio_activity > 0)
+  // {
+  //   g_message("Audio watchdog: REOPENING speaker after %lld sec idle",
+  //             (long long)(idle_us / G_USEC_PER_SEC));
+  //   self->spkr_audio_io->close();
+  //   open_audio_device(self, AudioIO::MODE_WR);
+  //   self->last_audio_activity = now;
+  // }
+
+  return G_SOURCE_CONTINUE;
+}
+
 // EchoLink callback: RX state changed
 static void
 on_qso_is_receiving(bool is_receiving, QtelCallDialog *self)
 {
+  g_message("QSO isReceiving: %s", is_receiving ? "TRUE" : "FALSE");
+
+  // Track audio activity for watchdog timer
+  if (is_receiving)
+    self->last_audio_activity = g_get_monotonic_time();
+
   set_receiving(self, is_receiving ? TRUE : FALSE);
 }
 
@@ -698,6 +763,11 @@ open_audio_device(QtelCallDialog *self, AudioIO::Mode mode)
       {
         g_warning("Could not open speaker audio device");
       }
+      else
+      {
+        g_message("Speaker audio device opened successfully, sample_rate=%d",
+                  self->spkr_audio_io->sampleRate());
+      }
     }
   }
 
@@ -737,6 +807,9 @@ init_audio_pipeline(QtelCallDialog *self)
   self->rem_audio_valve->setOpen(false);
   prev_src->registerSink(self->rem_audio_valve);
   prev_src = self->rem_audio_valve;
+
+  // NOTE: AudioPacer removed - original Qtel doesn't use it and it may
+  // interfere with the audio pipeline flow
 
   // Add interpolation if needed for speaker sample rate
 #if (INTERNAL_SAMPLE_RATE == 8000)
@@ -831,9 +904,15 @@ init_audio_pipeline(QtelCallDialog *self)
 
   if (self->audio_full_duplex)
   {
+    g_message("Full duplex mode: opening audio RDWR");
     if (open_audio_device(self, AudioIO::MODE_RDWR))
     {
       self->rem_audio_valve->setOpen(true);
+      g_message("RX audio valve opened (full duplex)");
+    }
+    else
+    {
+      g_warning("Failed to open audio device in full duplex mode");
     }
     gtk_widget_set_sensitive(self->vox_enable_switch, TRUE);
   }
@@ -841,12 +920,22 @@ init_audio_pipeline(QtelCallDialog *self)
   {
     // Half duplex: Start in RX mode, VOX disabled
     // Open speaker for receiving audio
+    g_message("Half duplex mode: opening speaker for RX");
     if (open_audio_device(self, AudioIO::MODE_WR))
     {
       self->rem_audio_valve->setOpen(true);
+      g_message("RX audio valve opened (half duplex)");
+    }
+    else
+    {
+      g_warning("Failed to open speaker in half duplex mode");
     }
     gtk_widget_set_sensitive(self->vox_enable_switch, FALSE);
   }
+
+  // Start audio watchdog timer to recover from ALSA XRUN
+  self->last_audio_activity = g_get_monotonic_time();
+  self->audio_watchdog_id = g_timeout_add(1000, audio_watchdog_callback, self);
 }
 
 static void
@@ -986,6 +1075,7 @@ create_chat_area(QtelCallDialog *self)
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
   gtk_widget_set_margin_start(box, 12);
   gtk_widget_set_margin_end(box, 12);
+  gtk_widget_set_margin_top(box, 12);
 
   // Stack for Chat / Info tabs
   GtkWidget *stack = adw_view_stack_new();
@@ -1159,6 +1249,13 @@ qtel_call_dialog_finalize(GObject *object)
 {
   QtelCallDialog *self = QTEL_CALL_DIALOG(object);
 
+  // Stop audio watchdog timer
+  if (self->audio_watchdog_id > 0)
+  {
+    g_source_remove(self->audio_watchdog_id);
+    self->audio_watchdog_id = 0;
+  }
+
   // Clean up EchoLink QSO
   delete self->qso;
   self->qso = nullptr;
@@ -1209,6 +1306,8 @@ qtel_call_dialog_init(QtelCallDialog *self)
   self->ptt_toggle_mode = FALSE;
   self->audio_full_duplex = FALSE;
   self->ptt_pressed = FALSE;
+  self->audio_watchdog_id = 0;
+  self->last_audio_activity = 0;
 
   // Initialize pointers
   self->qso = nullptr;
