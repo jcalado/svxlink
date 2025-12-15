@@ -30,12 +30,20 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #include "station-object.h"
 #include "station-list-model.h"
 #include "qtel-call-dialog.h"
+#include "MsgHandler.h"
 
 #include <EchoLinkDirectory.h>
+#include <EchoLinkDispatcher.h>
+#include <EchoLinkProxy.h>
+#include <AsyncAudioIO.h>
 
 #include <vector>
 #include <string>
 #include <sstream>
+
+using namespace Async;
+
+#define INTERNAL_SAMPLE_RATE 16000
 
 /**
  * Category filter enumeration
@@ -57,6 +65,7 @@ struct _QtelWindow
   GtkWidget *header_bar;
   GtkWidget *category_dropdown;
   GtkWidget *busy_toggle;
+  GtkWidget *proxy_status_icon;
   GtkWidget *search_button;
   GtkWidget *menu_button;
 
@@ -82,6 +91,21 @@ struct _QtelWindow
   // EchoLink Directory
   EchoLink::Directory *directory;
   gboolean is_refreshing;
+  gboolean updating_busy_toggle;  // Flag to prevent feedback loop
+
+  // Connect sound playback
+  MsgHandler *msg_handler;
+  Async::AudioIO *sound_dev;
+  gboolean sound_dev_open;
+
+  // Incoming connections
+  GListStore *incoming_model;
+  sigc::connection incoming_connection_slot;
+
+  // Proxy
+  gboolean proxy_enabled;
+  gboolean proxy_connected;
+  sigc::connection proxy_ready_slot;
 };
 
 G_DEFINE_TYPE(QtelWindow, qtel_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -90,9 +114,25 @@ static void
 on_busy_toggled(GtkToggleButton *button, gpointer user_data)
 {
   QtelWindow *self = QTEL_WINDOW(user_data);
+
+  // Prevent feedback loop when toggle is updated programmatically
+  if (self->updating_busy_toggle)
+    return;
+
   gboolean is_busy = gtk_toggle_button_get_active(button);
   g_message("Busy toggled: %s", is_busy ? "true" : "false");
-  // TODO: Update EchoLink status
+
+  if (self->directory != nullptr)
+  {
+    if (is_busy)
+    {
+      self->directory->makeBusy();
+    }
+    else
+    {
+      self->directory->makeOnline();
+    }
+  }
 }
 
 static void update_filter(QtelWindow *self);
@@ -103,6 +143,125 @@ static void show_toast(QtelWindow *self, const gchar *message);
 static void on_directory_status_changed(EchoLink::StationData::Status status, QtelWindow *self);
 static void on_directory_station_list_updated(QtelWindow *self);
 static void on_directory_error(const std::string& msg, QtelWindow *self);
+
+// Update proxy status icon
+static void
+update_proxy_icon(QtelWindow *self)
+{
+  if (self->proxy_status_icon == nullptr)
+    return;
+
+  if (!self->proxy_enabled)
+  {
+    gtk_widget_set_visible(self->proxy_status_icon, FALSE);
+  }
+  else
+  {
+    gtk_widget_set_visible(self->proxy_status_icon, TRUE);
+    if (self->proxy_connected)
+    {
+      gtk_image_set_from_icon_name(GTK_IMAGE(self->proxy_status_icon),
+                                    "network-vpn-symbolic");
+      gtk_widget_set_tooltip_text(self->proxy_status_icon, "Proxy connected");
+    }
+    else
+    {
+      gtk_image_set_from_icon_name(GTK_IMAGE(self->proxy_status_icon),
+                                    "network-vpn-disconnected-symbolic");
+      gtk_widget_set_tooltip_text(self->proxy_status_icon, "Proxy disconnected");
+    }
+  }
+}
+
+// Proxy ready handler
+static void
+on_proxy_ready(bool is_ready, QtelWindow *self)
+{
+  g_message("Proxy ready: %s", is_ready ? "yes" : "no");
+  self->proxy_connected = is_ready;
+  update_proxy_icon(self);
+
+  if (is_ready)
+  {
+    show_toast(self, "Proxy connected");
+  }
+  else
+  {
+    show_toast(self, "Proxy disconnected");
+  }
+}
+
+// Play connect sound on incoming connections
+static void
+play_connect_sound(QtelWindow *self)
+{
+  if (self->msg_handler == nullptr || self->sound_dev == nullptr)
+    return;
+
+  Settings *settings = settings_get_default();
+  const gchar *sound_path = settings_get_connect_sound(settings);
+
+  if (sound_path == nullptr || sound_path[0] == '\0')
+    return;
+
+  if (!g_file_test(sound_path, G_FILE_TEST_EXISTS))
+  {
+    g_warning("Connect sound file not found: %s", sound_path);
+    return;
+  }
+
+  // Open the audio device if not already open
+  if (!self->sound_dev_open)
+  {
+    if (!self->sound_dev->open(AudioIO::MODE_WR))
+    {
+      g_warning("Could not open audio device for connect sound");
+      return;
+    }
+    self->sound_dev_open = TRUE;
+  }
+
+  g_message("Playing connect sound: %s", sound_path);
+  self->msg_handler->playFile(std::string(sound_path));
+}
+
+// Incoming connection handler
+static void
+on_incoming_connection(const IpAddress& remote_ip, const std::string& callsign,
+                       const std::string& name, const std::string& priv,
+                       QtelWindow *self)
+{
+  g_message("Incoming connection from %s (%s) at %s",
+            callsign.c_str(), name.c_str(), remote_ip.toString().c_str());
+
+  // Play connect sound
+  play_connect_sound(self);
+
+  // Create a new incoming connection entry
+  // We'll store the data as a simple GObject
+  GObject *entry = G_OBJECT(g_object_new(G_TYPE_OBJECT, nullptr));
+  g_object_set_data_full(entry, "callsign", g_strdup(callsign.c_str()), g_free);
+  g_object_set_data_full(entry, "name", g_strdup(name.c_str()), g_free);
+  g_object_set_data_full(entry, "priv", g_strdup(priv.c_str()), g_free);
+  g_object_set_data_full(entry, "ip", g_strdup(remote_ip.toString().c_str()), g_free);
+
+  GDateTime *now = g_date_time_new_now_local();
+  g_autofree gchar *time_str = g_date_time_format(now, "%H:%M:%S");
+  g_object_set_data_full(entry, "time", g_strdup(time_str), g_free);
+  g_date_time_unref(now);
+
+  // Add to incoming model (prepend so newest is first)
+  g_list_store_insert(self->incoming_model, 0, entry);
+  g_object_unref(entry);
+
+  // Show toast notification
+  gchar *toast_msg = g_strdup_printf("Incoming call from %s", callsign.c_str());
+  show_toast(self, toast_msg);
+  g_free(toast_msg);
+
+  // Switch to incoming tab to show the notification
+  adw_view_stack_set_visible_child_name(ADW_VIEW_STACK(self->content_stack), "incoming");
+}
 
 static void
 on_category_changed(GtkDropDown *dropdown, GParamSpec *pspec, gpointer user_data)
@@ -222,7 +381,8 @@ on_directory_status_changed(EchoLink::StationData::Status status, QtelWindow *se
   const char *status_str = EchoLink::StationData::statusStr(status).c_str();
   g_message("Directory status changed: %s", status_str);
 
-  // Update busy toggle to match
+  // Update busy toggle to match (with flag to prevent feedback loop)
+  self->updating_busy_toggle = TRUE;
   if (status == EchoLink::StationData::STAT_BUSY)
   {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->busy_toggle), TRUE);
@@ -231,6 +391,7 @@ on_directory_status_changed(EchoLink::StationData::Status status, QtelWindow *se
   {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(self->busy_toggle), FALSE);
   }
+  self->updating_busy_toggle = FALSE;
 
   // Auto-refresh when we go online
   if (status == EchoLink::StationData::STAT_ONLINE ||
@@ -816,6 +977,12 @@ create_header_bar(QtelWindow *self)
   g_signal_connect(self->busy_toggle, "toggled", G_CALLBACK(on_busy_toggled), self);
   adw_header_bar_pack_start(ADW_HEADER_BAR(header), self->busy_toggle);
 
+  // Proxy status icon (shown when proxy is enabled)
+  self->proxy_status_icon = gtk_image_new_from_icon_name("network-vpn-symbolic");
+  gtk_widget_set_tooltip_text(self->proxy_status_icon, "Proxy status");
+  gtk_widget_set_visible(self->proxy_status_icon, FALSE);  // Hidden by default
+  adw_header_bar_pack_start(ADW_HEADER_BAR(header), self->proxy_status_icon);
+
   // Refresh spinner (shown during refresh)
   self->refresh_spinner = gtk_spinner_new();
   gtk_widget_set_visible(self->refresh_spinner, FALSE);
@@ -995,16 +1162,102 @@ create_content(QtelWindow *self)
   adw_view_stack_page_set_icon_name(messages_page, "mail-unread-symbolic");
 
   // Incoming connections page
+  GtkWidget *incoming_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+  gtk_widget_set_margin_start(incoming_box, 6);
+  gtk_widget_set_margin_end(incoming_box, 6);
+  gtk_widget_set_margin_top(incoming_box, 6);
+  gtk_widget_set_margin_bottom(incoming_box, 6);
+
   GtkWidget *incoming_scrolled = gtk_scrolled_window_new();
+  gtk_widget_set_vexpand(incoming_scrolled, TRUE);
   GtkWidget *incoming_list = gtk_list_box_new();
+  gtk_list_box_set_selection_mode(GTK_LIST_BOX(incoming_list), GTK_SELECTION_SINGLE);
   gtk_list_box_set_placeholder(GTK_LIST_BOX(incoming_list),
     gtk_label_new("No incoming connections"));
   gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(incoming_scrolled), incoming_list);
   self->incoming_view = incoming_list;
+  gtk_box_append(GTK_BOX(incoming_box), incoming_scrolled);
+
+  // Bind list to incoming model (will be set up after model is created)
+  gtk_list_box_bind_model(GTK_LIST_BOX(incoming_list),
+    G_LIST_MODEL(self->incoming_model),
+    [](gpointer item_ptr, gpointer) -> GtkWidget* {
+      GObject *item = G_OBJECT(item_ptr);
+      const gchar *callsign = static_cast<const gchar*>(g_object_get_data(item, "callsign"));
+      const gchar *name = static_cast<const gchar*>(g_object_get_data(item, "name"));
+      const gchar *time = static_cast<const gchar*>(g_object_get_data(item, "time"));
+
+      GtkWidget *row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+      gtk_widget_set_margin_start(row_box, 6);
+      gtk_widget_set_margin_end(row_box, 6);
+      gtk_widget_set_margin_top(row_box, 6);
+      gtk_widget_set_margin_bottom(row_box, 6);
+
+      GtkWidget *callsign_label = gtk_label_new(callsign);
+      gtk_label_set_xalign(GTK_LABEL(callsign_label), 0);
+      gtk_widget_add_css_class(callsign_label, "heading");
+      gtk_box_append(GTK_BOX(row_box), callsign_label);
+
+      GtkWidget *name_label = gtk_label_new(name);
+      gtk_label_set_xalign(GTK_LABEL(name_label), 0);
+      gtk_widget_set_hexpand(name_label, TRUE);
+      gtk_box_append(GTK_BOX(row_box), name_label);
+
+      GtkWidget *time_label = gtk_label_new(time);
+      gtk_label_set_xalign(GTK_LABEL(time_label), 1);
+      gtk_widget_add_css_class(time_label, "dim-label");
+      gtk_box_append(GTK_BOX(row_box), time_label);
+
+      return row_box;
+    }, self, nullptr);
+
+  // Button box for Accept and Clear
+  GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_set_halign(button_box, GTK_ALIGN_END);
+
+  GtkWidget *clear_button = gtk_button_new_with_label("Clear");
+  g_signal_connect(clear_button, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+    QtelWindow *win = QTEL_WINDOW(data);
+    g_list_store_remove_all(win->incoming_model);
+  }), self);
+  gtk_box_append(GTK_BOX(button_box), clear_button);
+
+  GtkWidget *accept_button = gtk_button_new_with_label("Accept");
+  gtk_widget_add_css_class(accept_button, "suggested-action");
+  g_signal_connect(accept_button, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+    QtelWindow *win = QTEL_WINDOW(data);
+    GtkListBoxRow *row = gtk_list_box_get_selected_row(GTK_LIST_BOX(win->incoming_view));
+    if (row == nullptr)
+      return;
+
+    guint index = gtk_list_box_row_get_index(row);
+    GObject *item = G_OBJECT(g_list_model_get_item(G_LIST_MODEL(win->incoming_model), index));
+    if (item == nullptr)
+      return;
+
+    const gchar *callsign = static_cast<const gchar*>(g_object_get_data(item, "callsign"));
+    const gchar *name = static_cast<const gchar*>(g_object_get_data(item, "name"));
+    const gchar *ip = static_cast<const gchar*>(g_object_get_data(item, "ip"));
+    const gchar *priv = static_cast<const gchar*>(g_object_get_data(item, "priv"));
+
+    g_message("Accepting connection from %s at %s", callsign, ip);
+
+    // Open call dialog in accept mode
+    QtelCallDialog *dialog = qtel_call_dialog_new_accept(
+      GTK_WINDOW(win), callsign, name, ip, priv);
+    gtk_window_present(GTK_WINDOW(dialog));
+
+    // Remove from incoming list
+    g_list_store_remove(win->incoming_model, index);
+    g_object_unref(item);
+  }), self);
+  gtk_box_append(GTK_BOX(button_box), accept_button);
+
+  gtk_box_append(GTK_BOX(incoming_box), button_box);
 
   AdwViewStackPage *incoming_page = adw_view_stack_add_titled(
     ADW_VIEW_STACK(self->content_stack),
-    incoming_scrolled,
+    incoming_box,
     "incoming",
     "Incoming"
   );
@@ -1065,6 +1318,16 @@ qtel_window_dispose(GObject *object)
     g_clear_object(&self->settings);
   }
 
+  // Disconnect signals
+  self->incoming_connection_slot.disconnect();
+  self->proxy_ready_slot.disconnect();
+
+  // Clean up EchoLink proxy
+  if (self->proxy_enabled && EchoLink::Proxy::instance() != nullptr)
+  {
+    EchoLink::Proxy::instance()->disconnect();
+  }
+
   // Clean up EchoLink directory
   if (self->directory != nullptr)
   {
@@ -1073,6 +1336,13 @@ qtel_window_dispose(GObject *object)
     self->directory = nullptr;
   }
 
+  // Clean up connect sound playback
+  delete self->msg_handler;
+  self->msg_handler = nullptr;
+  delete self->sound_dev;
+  self->sound_dev = nullptr;
+
+  g_clear_object(&self->incoming_model);
   g_clear_object(&self->selection_model);
   g_clear_object(&self->filter_model);
   g_clear_object(&self->station_model);
@@ -1101,17 +1371,66 @@ qtel_window_init(QtelWindow *self)
   self->current_category = CATEGORY_STATIONS;
   self->directory = nullptr;
   self->is_refreshing = FALSE;
+  self->updating_busy_toggle = FALSE;
   self->refresh_spinner = nullptr;
+  self->msg_handler = nullptr;
+  self->sound_dev = nullptr;
+  self->sound_dev_open = FALSE;
+  self->incoming_model = nullptr;
+  self->proxy_status_icon = nullptr;
+  self->proxy_enabled = FALSE;
+  self->proxy_connected = FALSE;
 
   // Initialize settings
   self->settings = g_settings_new(APP_ID);
 
-  // Initialize EchoLink directory
+  // Initialize incoming connections model
+  self->incoming_model = g_list_store_new(G_TYPE_OBJECT);
+
+  // Get settings that are used for both proxy and directory
   Settings *app_settings = settings_get_default();
   const gchar *callsign = settings_get_callsign(app_settings);
   const gchar *password = settings_get_password(app_settings);
   const gchar *location = settings_get_location(app_settings);
   const gchar *servers_str = settings_get_directory_servers(app_settings);
+
+  // Initialize EchoLink proxy if enabled
+  gboolean proxy_enabled = settings_get_proxy_enabled(app_settings);
+  if (proxy_enabled)
+  {
+    const gchar *proxy_server = settings_get_proxy_server(app_settings);
+    gint proxy_port = settings_get_proxy_port(app_settings);
+    const gchar *proxy_password = settings_get_proxy_password(app_settings);
+
+    if (proxy_server != nullptr && proxy_server[0] != '\0' &&
+        callsign != nullptr && callsign[0] != '\0')
+    {
+      g_message("Initializing EchoLink proxy: %s:%d", proxy_server, proxy_port);
+
+      self->proxy_enabled = TRUE;
+
+      // Create proxy singleton
+      new EchoLink::Proxy(
+        std::string(proxy_server),
+        static_cast<uint16_t>(proxy_port),
+        std::string(callsign),
+        std::string(proxy_password ? proxy_password : "")
+      );
+
+      // Connect to proxy ready signal
+      self->proxy_ready_slot = EchoLink::Proxy::instance()->proxyReady.connect(
+        sigc::bind(sigc::ptr_fun(on_proxy_ready), self));
+
+      // Start proxy connection
+      EchoLink::Proxy::instance()->connect();
+    }
+    else
+    {
+      g_warning("Proxy enabled but server or callsign not configured");
+    }
+  }
+
+  // Initialize EchoLink directory
 
   // Check if we have credentials
   if (callsign != nullptr && callsign[0] != '\0' &&
@@ -1172,6 +1491,27 @@ qtel_window_init(QtelWindow *self)
     g_message("No EchoLink credentials configured - directory disabled");
   }
 
+  // Initialize connect sound playback
+  const gchar *spkr_dev = settings_get_spkr_audio_device(app_settings);
+  if (spkr_dev != nullptr && spkr_dev[0] != '\0')
+  {
+    self->msg_handler = new MsgHandler(INTERNAL_SAMPLE_RATE);
+    self->sound_dev = new AudioIO(spkr_dev, 0);
+
+    // Connect message handler to audio device
+    self->msg_handler->registerSink(self->sound_dev);
+
+    g_message("Connect sound playback initialized with device: %s", spkr_dev);
+  }
+
+  // Connect to incoming connection signal from dispatcher
+  if (EchoLink::Dispatcher::instance() != nullptr)
+  {
+    self->incoming_connection_slot = EchoLink::Dispatcher::instance()->incomingConnection.connect(
+      sigc::bind(sigc::ptr_fun(on_incoming_connection), self));
+    g_message("Connected to EchoLink incoming connection dispatcher");
+  }
+
   // Restore window state
   int width = g_settings_get_int(self->settings, "window-width");
   int height = g_settings_get_int(self->settings, "window-height");
@@ -1191,6 +1531,9 @@ qtel_window_init(QtelWindow *self)
   // Add header bar
   self->header_bar = create_header_bar(self);
   adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar_view), self->header_bar);
+
+  // Update proxy icon based on initial state
+  update_proxy_icon(self);
 
   // Create horizontal paned for sidebar/content (like Qt's QSplitter)
   self->main_paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);

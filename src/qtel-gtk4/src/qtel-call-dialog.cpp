@@ -798,10 +798,8 @@ init_audio_pipeline(QtelCallDialog *self)
   prev_src->registerSink(self->tx_audio_splitter);
   prev_src = nullptr;
 
-  // Note: VOX level metering would require Vox to inherit from AudioSink
-  // For now, VOX is disabled until we properly implement AudioSink interface in Vox
-  // TODO: Make Vox inherit from Async::AudioSink and enable this:
-  // self->tx_audio_splitter->addSink(self->vox);
+  // Connect VOX to audio pipeline for level metering
+  self->tx_audio_splitter->addSink(self->vox);
 
 #if INTERNAL_SAMPLE_RATE == 16000
   AudioDecimator *down_sampler = new AudioDecimator(2, coeff_16_8, coeff_16_8_taps);
@@ -1375,4 +1373,66 @@ qtel_call_dialog_accept(QtelCallDialog *self)
   {
     self->qso->accept();
   }
+}
+
+QtelCallDialog *
+qtel_call_dialog_new_accept(GtkWindow *parent,
+                             const gchar *callsign,
+                             const gchar *name,
+                             const gchar *ip_address,
+                             const gchar *priv)
+{
+  QtelCallDialog *self = static_cast<QtelCallDialog*>(
+    g_object_new(QTEL_TYPE_CALL_DIALOG,
+                 "transient-for", parent,
+                 nullptr)
+  );
+
+  self->callsign = g_strdup(callsign ? callsign : "?");
+  self->description = g_strdup(name ? name : "");
+  self->node_id = 0;
+  self->ip_address = g_strdup(ip_address ? ip_address : "");
+  self->accept_connection = TRUE;
+
+  // Set window title
+  gchar *title = g_strdup_printf("QSO: %s", self->callsign);
+  gtk_window_set_title(GTK_WINDOW(self), title);
+  g_free(title);
+
+  // Update labels
+  gtk_label_set_text(GTK_LABEL(self->callsign_label), self->callsign);
+  gtk_label_set_text(GTK_LABEL(self->description_label), self->description);
+  gtk_label_set_text(GTK_LABEL(self->ip_label), self->ip_address);
+
+  // Initialize audio pipeline
+  init_audio_pipeline(self);
+
+  // Create QSO and accept
+  IpAddress ip(ip_address ? ip_address : "");
+  if (!ip.isEmpty())
+  {
+    create_connection(self, ip);
+
+    // Set remote parameters (codec info) if available
+    if (priv != nullptr && priv[0] != '\0' && self->qso != nullptr)
+    {
+      self->qso->setRemoteParams(std::string(priv));
+    }
+
+    // Accept the connection
+    if (self->qso != nullptr)
+    {
+      self->qso->accept();
+      self->state = CONNECTION_STATE_CONNECTED;
+      append_info(self, "Connected\n");
+      update_ui_for_state(self);
+      check_transmit(self);
+    }
+  }
+  else
+  {
+    append_info(self, "Error: Invalid IP address\n");
+  }
+
+  return self;
 }

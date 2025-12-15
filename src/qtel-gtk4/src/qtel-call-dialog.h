@@ -75,6 +75,21 @@ QtelCallDialog *qtel_call_dialog_new_from_host(GtkWindow *parent,
  */
 void qtel_call_dialog_accept(QtelCallDialog *self);
 
+/**
+ * @brief Create a new call dialog to accept an incoming connection
+ * @param parent Parent window
+ * @param callsign Remote station callsign
+ * @param name Remote station name
+ * @param ip_address Remote IP address
+ * @param priv Remote private parameters (codec info)
+ * @return A new QtelCallDialog configured to accept
+ */
+QtelCallDialog *qtel_call_dialog_new_accept(GtkWindow *parent,
+                                             const gchar *callsign,
+                                             const gchar *name,
+                                             const gchar *ip_address,
+                                             const gchar *priv);
+
 G_END_DECLS
 
 #endif /* QTEL_CALL_DIALOG_H */

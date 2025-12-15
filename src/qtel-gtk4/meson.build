@@ -133,6 +133,7 @@ qtel_sources = [
   'src/station-object.cpp',
   'src/station-list-model.cpp',
   'src/vox.cpp',
+  'src/MsgHandler.cpp',
 ]
 
 # UI files - Blueprint or XML

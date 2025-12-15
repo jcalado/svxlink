@@ -29,11 +29,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 #include <glib.h>
 #include <sigc++/sigc++.h>
-
-// Note: This class would normally inherit from Async::AudioSink
-// For now, we create a standalone version that can be called manually
-// with audio samples. Integration with the async audio system will
-// be done when connecting to the actual EchoLink backend.
+#include <AsyncAudioSink.h>
 
 /**
  * VOX State enumeration
@@ -49,8 +45,10 @@ enum class VoxState {
  *
  * This class implements VOX logic - detecting voice activity
  * and controlling PTT based on audio level.
+ *
+ * Inherits from Async::AudioSink to integrate with the audio pipeline.
  */
-class Vox : public sigc::trackable
+class Vox : public sigc::trackable, public Async::AudioSink
 {
 public:
   /**
@@ -106,19 +104,17 @@ public:
   void setDelay(int delay_ms);
 
   /**
-   * @brief Process audio samples
+   * @brief Process audio samples (AudioSink interface)
    * @param samples Audio sample buffer
    * @param count Number of samples
    * @return Number of samples processed
-   *
-   * This would normally be called from Async::AudioSink::writeSamples
    */
-  int writeSamples(const float *samples, int count);
+  int writeSamples(const float *samples, int count) override;
 
   /**
-   * @brief Flush samples (required by AudioSink interface)
+   * @brief Flush samples (AudioSink interface)
    */
-  void flushSamples() { /* Nothing to do */ }
+  void flushSamples(void) override;
 
   // Signals
   sigc::signal<void(int)> levelChanged;        ///< Level in dB [-60, 0]

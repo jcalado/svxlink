@@ -84,6 +84,12 @@ void Vox::setDelay(int delay_ms)
   }
 }
 
+void Vox::flushSamples(void)
+{
+  // Signal that all samples have been flushed
+  sourceAllSamplesFlushed();
+}
+
 int Vox::writeSamples(const float *samples, int count)
 {
   assert(count > 0);
