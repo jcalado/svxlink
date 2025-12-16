@@ -87,6 +87,13 @@ struct _QtelCallDialog
   GtkWidget *header_bar;
   GtkWidget *connect_button;
   GtkWidget *disconnect_button;
+  GtkWidget *view_toggle_button;
+
+  // View switching
+  GtkWidget *content_stack;      // Stack to switch between full and simple views
+  GtkWidget *full_view_content;  // Full view with chat, VOX, etc.
+  GtkWidget *simple_view_content; // Simple view with just indicators and PTT
+  gboolean is_simple_view;
 
   // Station info widgets
   GtkWidget *callsign_label;
@@ -102,13 +109,20 @@ struct _QtelCallDialog
   GtkTextBuffer *chat_buffer;
   GtkTextBuffer *info_buffer;
 
-  // Indicator widgets
+  // Indicator widgets (full view)
   GtkWidget *rx_indicator;
   GtkWidget *tx_indicator;
 
-  // PTT widgets
+  // PTT widgets (full view)
   GtkWidget *ptt_button;
   gboolean ptt_toggle_mode;
+
+  // Simple view widgets
+  GtkWidget *simple_callsign_label;
+  GtkWidget *simple_rx_indicator;
+  GtkWidget *simple_tx_indicator;
+  GtkWidget *simple_ptt_button;
+  GtkWidget *simple_status_label;
 
   // VOX widgets (using libadwaita specialized rows)
   GtkWidget *vox_enable_row;     // AdwSwitchRow
@@ -193,15 +207,44 @@ on_disconnect_clicked(GtkButton *button, gpointer user_data)
 }
 
 static void
+on_view_toggle_clicked(GtkButton *button, gpointer user_data)
+{
+  QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
+
+  self->is_simple_view = !self->is_simple_view;
+
+  if (self->is_simple_view)
+  {
+    gtk_stack_set_visible_child_name(GTK_STACK(self->content_stack), "simple");
+    gtk_button_set_icon_name(GTK_BUTTON(self->view_toggle_button), "view-reveal-symbolic");
+    gtk_widget_set_tooltip_text(self->view_toggle_button, "Show full view");
+    // Resize window to be more compact
+    gtk_window_set_default_size(GTK_WINDOW(self), 300, 250);
+  }
+  else
+  {
+    gtk_stack_set_visible_child_name(GTK_STACK(self->content_stack), "full");
+    gtk_button_set_icon_name(GTK_BUTTON(self->view_toggle_button), "view-conceal-symbolic");
+    gtk_widget_set_tooltip_text(self->view_toggle_button, "Show simple view");
+    // Restore normal window size
+    gtk_window_set_default_size(GTK_WINDOW(self), 500, 700);
+  }
+}
+
+static void
 update_ptt_visual(QtelCallDialog *self)
 {
   if (self->ptt_pressed)
   {
     gtk_widget_add_css_class(self->ptt_button, "ptt-active");
+    if (self->simple_ptt_button)
+      gtk_widget_add_css_class(self->simple_ptt_button, "ptt-active");
   }
   else
   {
     gtk_widget_remove_css_class(self->ptt_button, "ptt-active");
+    if (self->simple_ptt_button)
+      gtk_widget_remove_css_class(self->simple_ptt_button, "ptt-active");
   }
 }
 
@@ -528,11 +571,16 @@ set_transmitting(QtelCallDialog *self, gboolean transmit)
 
   self->is_transmitting = transmit;
 
-  // Update TX indicator
+  // Update TX indicators (both views)
   if (transmit)
   {
     gtk_widget_remove_css_class(self->tx_indicator, "rxtx-idle");
     gtk_widget_add_css_class(self->tx_indicator, "rxtx-tx-active");
+    if (self->simple_tx_indicator)
+    {
+      gtk_widget_remove_css_class(self->simple_tx_indicator, "rxtx-idle");
+      gtk_widget_add_css_class(self->simple_tx_indicator, "rxtx-tx-active");
+    }
 
     if (!self->audio_full_duplex)
     {
@@ -553,6 +601,11 @@ set_transmitting(QtelCallDialog *self, gboolean transmit)
   {
     gtk_widget_remove_css_class(self->tx_indicator, "rxtx-tx-active");
     gtk_widget_add_css_class(self->tx_indicator, "rxtx-idle");
+    if (self->simple_tx_indicator)
+    {
+      gtk_widget_remove_css_class(self->simple_tx_indicator, "rxtx-tx-active");
+      gtk_widget_add_css_class(self->simple_tx_indicator, "rxtx-idle");
+    }
 
     if (self->ptt_valve != nullptr)
       self->ptt_valve->setOpen(false);
@@ -581,22 +634,34 @@ set_receiving(QtelCallDialog *self, gboolean receiving)
 
   self->is_receiving = receiving;
 
-  // Update RX indicator
+  // Update RX indicators (both views)
   if (receiving)
   {
     gtk_widget_remove_css_class(self->rx_indicator, "rxtx-idle");
     gtk_widget_add_css_class(self->rx_indicator, "rxtx-rx-active");
+    if (self->simple_rx_indicator)
+    {
+      gtk_widget_remove_css_class(self->simple_rx_indicator, "rxtx-idle");
+      gtk_widget_add_css_class(self->simple_rx_indicator, "rxtx-rx-active");
+    }
   }
   else
   {
     gtk_widget_remove_css_class(self->rx_indicator, "rxtx-rx-active");
     gtk_widget_add_css_class(self->rx_indicator, "rxtx-idle");
+    if (self->simple_rx_indicator)
+    {
+      gtk_widget_remove_css_class(self->simple_rx_indicator, "rxtx-rx-active");
+      gtk_widget_add_css_class(self->simple_rx_indicator, "rxtx-idle");
+    }
   }
 }
 
 static void
 update_ui_for_state(QtelCallDialog *self)
 {
+  const gchar *status_text = nullptr;
+
   switch (self->state)
   {
     case CONNECTION_STATE_DISCONNECTED:
@@ -606,7 +671,7 @@ update_ui_for_state(QtelCallDialog *self)
       gtk_widget_set_sensitive(self->connect_button, self->qso != nullptr);
       gtk_widget_set_sensitive(self->ptt_button, FALSE);
       gtk_widget_set_sensitive(self->chat_entry, FALSE);
-      gtk_label_set_text(GTK_LABEL(self->status_label), "Disconnected");
+      status_text = "Disconnected";
       set_transmitting(self, FALSE);
       set_receiving(self, FALSE);
       break;
@@ -618,7 +683,7 @@ update_ui_for_state(QtelCallDialog *self)
       gtk_widget_set_sensitive(self->disconnect_button, TRUE);
       gtk_widget_set_sensitive(self->ptt_button, FALSE);
       gtk_widget_set_sensitive(self->chat_entry, FALSE);
-      gtk_label_set_text(GTK_LABEL(self->status_label), "Connecting...");
+      status_text = "Connecting...";
       break;
 
     case CONNECTION_STATE_CONNECTED:
@@ -628,8 +693,11 @@ update_ui_for_state(QtelCallDialog *self)
       gtk_widget_set_sensitive(self->disconnect_button, TRUE);
       gtk_widget_set_sensitive(self->ptt_button, TRUE);
       gtk_widget_set_sensitive(self->chat_entry, TRUE);
-      gtk_label_set_text(GTK_LABEL(self->status_label), "Connected");
-      gtk_widget_grab_focus(self->ptt_button);
+      status_text = "Connected";
+      if (!self->is_simple_view)
+        gtk_widget_grab_focus(self->ptt_button);
+      else if (self->simple_ptt_button)
+        gtk_widget_grab_focus(self->simple_ptt_button);
       break;
 
     case CONNECTION_STATE_BYE_RECEIVED:
@@ -639,10 +707,20 @@ update_ui_for_state(QtelCallDialog *self)
       gtk_widget_set_sensitive(self->connect_button, FALSE);
       gtk_widget_set_sensitive(self->ptt_button, FALSE);
       gtk_widget_set_sensitive(self->chat_entry, FALSE);
-      gtk_label_set_text(GTK_LABEL(self->status_label), "Disconnecting...");
+      status_text = "Disconnecting...";
       set_transmitting(self, FALSE);
       break;
   }
+
+  // Update status labels in both views
+  gtk_label_set_text(GTK_LABEL(self->status_label), status_text);
+  if (self->simple_status_label)
+    gtk_label_set_text(GTK_LABEL(self->simple_status_label), status_text);
+
+  // Update simple view PTT button sensitivity
+  if (self->simple_ptt_button)
+    gtk_widget_set_sensitive(self->simple_ptt_button,
+      self->state == CONNECTION_STATE_CONNECTED);
 }
 
 // Convert text to valid UTF-8, replacing invalid sequences
@@ -1264,6 +1342,76 @@ create_ptt_button(QtelCallDialog *self)
   return box;
 }
 
+static GtkWidget *
+create_simple_view(QtelCallDialog *self)
+{
+  // Simple view: centered layout with callsign, status, RX/TX indicators, and PTT
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+  gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
+  gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
+  gtk_widget_set_hexpand(box, TRUE);
+  gtk_widget_set_vexpand(box, TRUE);
+  gtk_widget_set_margin_start(box, 24);
+  gtk_widget_set_margin_end(box, 24);
+  gtk_widget_set_margin_top(box, 24);
+  gtk_widget_set_margin_bottom(box, 24);
+
+  // Callsign label (large, bold) - will be updated in qtel_call_dialog_new
+  self->simple_callsign_label = gtk_label_new("");
+  gtk_widget_add_css_class(self->simple_callsign_label, "title-1");
+  gtk_box_append(GTK_BOX(box), self->simple_callsign_label);
+
+  // Status label
+  self->simple_status_label = gtk_label_new("Disconnected");
+  gtk_widget_add_css_class(self->simple_status_label, "dim-label");
+  gtk_box_append(GTK_BOX(box), self->simple_status_label);
+
+  // RX/TX indicators - larger for simple view
+  GtkWidget *indicator_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 24);
+  gtk_widget_set_halign(indicator_box, GTK_ALIGN_CENTER);
+  gtk_widget_set_margin_top(indicator_box, 12);
+  gtk_widget_set_margin_bottom(indicator_box, 12);
+
+  self->simple_rx_indicator = gtk_label_new("RX");
+  gtk_widget_add_css_class(self->simple_rx_indicator, "rxtx-indicator");
+  gtk_widget_add_css_class(self->simple_rx_indicator, "rxtx-idle");
+  gtk_widget_add_css_class(self->simple_rx_indicator, "title-3");
+  gtk_box_append(GTK_BOX(indicator_box), self->simple_rx_indicator);
+
+  self->simple_tx_indicator = gtk_label_new("TX");
+  gtk_widget_add_css_class(self->simple_tx_indicator, "rxtx-indicator");
+  gtk_widget_add_css_class(self->simple_tx_indicator, "rxtx-idle");
+  gtk_widget_add_css_class(self->simple_tx_indicator, "title-3");
+  gtk_box_append(GTK_BOX(indicator_box), self->simple_tx_indicator);
+
+  gtk_box_append(GTK_BOX(box), indicator_box);
+
+  // Large PTT button
+  self->simple_ptt_button = gtk_button_new_with_label("PTT");
+  gtk_widget_add_css_class(self->simple_ptt_button, "ptt-button");
+  gtk_widget_add_css_class(self->simple_ptt_button, "suggested-action");
+  gtk_widget_add_css_class(self->simple_ptt_button, "pill");
+  gtk_widget_set_sensitive(self->simple_ptt_button, FALSE);
+  gtk_widget_set_size_request(self->simple_ptt_button, 200, 80);
+
+  // Press/release gesture for push-to-talk
+  GtkGesture *press = gtk_gesture_click_new();
+  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(press), GDK_BUTTON_PRIMARY);
+  gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(press), GTK_PHASE_CAPTURE);
+  g_signal_connect(press, "pressed", G_CALLBACK(on_ptt_pressed), self);
+  g_signal_connect(press, "released", G_CALLBACK(on_ptt_released), self);
+  gtk_widget_add_controller(self->simple_ptt_button, GTK_EVENT_CONTROLLER(press));
+
+  gtk_box_append(GTK_BOX(box), self->simple_ptt_button);
+
+  // Hint label
+  GtkWidget *simple_hint = gtk_label_new("Hold to talk");
+  gtk_widget_add_css_class(simple_hint, "dim-label");
+  gtk_box_append(GTK_BOX(box), simple_hint);
+
+  return box;
+}
+
 static void
 qtel_call_dialog_finalize(GObject *object)
 {
@@ -1328,6 +1476,7 @@ qtel_call_dialog_init(QtelCallDialog *self)
   self->ptt_pressed = FALSE;
   self->audio_watchdog_id = 0;
   self->last_audio_activity = 0;
+  self->is_simple_view = FALSE;
 
   // Initialize pointers
   self->qso = nullptr;
@@ -1338,6 +1487,13 @@ qtel_call_dialog_init(QtelCallDialog *self)
   self->rem_audio_valve = nullptr;
   self->ptt_valve = nullptr;
   self->tx_audio_splitter = nullptr;
+
+  // Initialize simple view pointers
+  self->simple_callsign_label = nullptr;
+  self->simple_rx_indicator = nullptr;
+  self->simple_tx_indicator = nullptr;
+  self->simple_ptt_button = nullptr;
+  self->simple_status_label = nullptr;
 
   // Create VOX
   self->vox = new Vox();
@@ -1368,33 +1524,53 @@ qtel_call_dialog_init(QtelCallDialog *self)
   g_signal_connect(self->disconnect_button, "clicked", G_CALLBACK(on_disconnect_clicked), self);
   adw_header_bar_pack_start(ADW_HEADER_BAR(self->header_bar), self->disconnect_button);
 
+  // View toggle button (switch between full and simple views)
+  self->view_toggle_button = gtk_button_new_from_icon_name("view-conceal-symbolic");
+  gtk_widget_set_tooltip_text(self->view_toggle_button, "Show simple view");
+  g_signal_connect(self->view_toggle_button, "clicked", G_CALLBACK(on_view_toggle_clicked), self);
+  adw_header_bar_pack_end(ADW_HEADER_BAR(self->header_bar), self->view_toggle_button);
+
   adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar_view), self->header_bar);
 
-  // Content
+  // Content stack for switching between full and simple views
+  self->content_stack = gtk_stack_new();
+  gtk_stack_set_transition_type(GTK_STACK(self->content_stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+  gtk_stack_set_transition_duration(GTK_STACK(self->content_stack), 150);
+
+  // Full view (scrollable)
   GtkWidget *scroll = gtk_scrolled_window_new();
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
 
-  GtkWidget *content_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-  gtk_widget_set_margin_start(content_box, 12);
-  gtk_widget_set_margin_end(content_box, 12);
-  gtk_widget_set_margin_top(content_box, 12);
-  gtk_widget_set_margin_bottom(content_box, 12);
+  self->full_view_content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_set_margin_start(self->full_view_content, 12);
+  gtk_widget_set_margin_end(self->full_view_content, 12);
+  gtk_widget_set_margin_top(self->full_view_content, 12);
+  gtk_widget_set_margin_bottom(self->full_view_content, 12);
 
   // Chat area (includes Station tab)
-  gtk_box_append(GTK_BOX(content_box), create_chat_area(self));
+  gtk_box_append(GTK_BOX(self->full_view_content), create_chat_area(self));
 
   // RX/TX indicators
-  gtk_box_append(GTK_BOX(content_box), create_indicators(self));
+  gtk_box_append(GTK_BOX(self->full_view_content), create_indicators(self));
 
   // VOX controls
-  gtk_box_append(GTK_BOX(content_box), create_vox_controls(self));
+  gtk_box_append(GTK_BOX(self->full_view_content), create_vox_controls(self));
 
   // PTT button
-  gtk_box_append(GTK_BOX(content_box), create_ptt_button(self));
+  gtk_box_append(GTK_BOX(self->full_view_content), create_ptt_button(self));
 
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), content_box);
-  adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar_view), scroll);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), self->full_view_content);
+  gtk_stack_add_named(GTK_STACK(self->content_stack), scroll, "full");
+
+  // Simple view (centered, no scroll needed)
+  self->simple_view_content = create_simple_view(self);
+  gtk_stack_add_named(GTK_STACK(self->content_stack), self->simple_view_content, "simple");
+
+  // Start with full view
+  gtk_stack_set_visible_child_name(GTK_STACK(self->content_stack), "full");
+
+  adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar_view), self->content_stack);
 
   adw_window_set_content(ADW_WINDOW(self), toolbar_view);
 }
@@ -1422,8 +1598,9 @@ qtel_call_dialog_new(GtkWindow *parent,
   gtk_window_set_title(GTK_WINDOW(self), title);
   g_free(title);
 
-  // Update labels
+  // Update labels (both full and simple views)
   gtk_label_set_text(GTK_LABEL(self->callsign_label), self->callsign);
+  gtk_label_set_text(GTK_LABEL(self->simple_callsign_label), self->callsign);
   gtk_label_set_text(GTK_LABEL(self->description_label), self->description);
   gtk_label_set_text(GTK_LABEL(self->ip_label), self->ip_address);
 
@@ -1462,8 +1639,9 @@ qtel_call_dialog_new_from_host(GtkWindow *parent, const gchar *host)
   gtk_window_set_title(GTK_WINDOW(self), title);
   g_free(title);
 
-  // Update labels
+  // Update labels (both full and simple views)
   gtk_label_set_text(GTK_LABEL(self->callsign_label), self->callsign);
+  gtk_label_set_text(GTK_LABEL(self->simple_callsign_label), self->callsign);
   gtk_label_set_text(GTK_LABEL(self->description_label), self->description);
   gtk_label_set_text(GTK_LABEL(self->ip_label), "Resolving...");
 
@@ -1515,8 +1693,9 @@ qtel_call_dialog_new_accept(GtkWindow *parent,
   gtk_window_set_title(GTK_WINDOW(self), title);
   g_free(title);
 
-  // Update labels
+  // Update labels (both full and simple views)
   gtk_label_set_text(GTK_LABEL(self->callsign_label), self->callsign);
+  gtk_label_set_text(GTK_LABEL(self->simple_callsign_label), self->callsign);
   gtk_label_set_text(GTK_LABEL(self->description_label), self->description);
   gtk_label_set_text(GTK_LABEL(self->ip_label), self->ip_address);
 
