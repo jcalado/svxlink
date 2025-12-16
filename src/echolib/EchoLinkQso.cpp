@@ -912,7 +912,15 @@ void Qso::sendKeepAlive(Timer *timer)
   }
   else
   {
-    sendSdesPacket();
+    sendSdesPacket();     // Keep control port (5199) alive
+
+    // Also keep audio port (5198) alive for NAT traversal
+    // This is critical for CGNAT environments where the audio port
+    // NAT mapping may timeout if we're only receiving, not transmitting
+    if (state == STATE_CONNECTED)
+    {
+      sendInfoData();
+    }
   }
 } /* Qso::sendKeepAlive */
 

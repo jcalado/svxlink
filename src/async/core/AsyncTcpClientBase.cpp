@@ -40,6 +40,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #include <sys/socket.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <netinet/tcp.h>
 
 #include <cerrno>
 #include <cstdio>
@@ -304,6 +305,18 @@ void TcpClientBase::connectToRemote(void)
   {
     con->onDisconnected(TcpConnection::DR_SYSTEM_ERROR);
     return;
+  }
+
+    /* Enable TCP keepalive to prevent CGNAT/firewall idle timeouts */
+  int keepalive = 1;
+  if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive)) == 0)
+  {
+    int keepidle = 30;   // Start keepalives after 30s idle
+    int keepintvl = 10;  // Send keepalives every 10s
+    int keepcnt = 3;     // Give up after 3 failed keepalives
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
   }
 
     /* Setup non-blocking operation */
