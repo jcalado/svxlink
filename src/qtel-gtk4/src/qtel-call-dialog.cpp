@@ -110,12 +110,11 @@ struct _QtelCallDialog
   GtkWidget *ptt_button;
   gboolean ptt_toggle_mode;
 
-  // VOX widgets
-  GtkWidget *vox_enable_switch;
-  GtkWidget *vox_threshold_scale;
-  GtkWidget *vox_delay_spin;
+  // VOX widgets (using libadwaita specialized rows)
+  GtkWidget *vox_enable_row;     // AdwSwitchRow
+  GtkWidget *vox_threshold_row;  // AdwSpinRow
+  GtkWidget *vox_delay_row;      // AdwSpinRow
   GtkWidget *vox_level_bar;
-  GtkWidget *vox_indicator;
 
   // VOX controller
   Vox *vox;
@@ -301,30 +300,30 @@ on_chat_entry_activate(GtkEntry *entry, gpointer user_data)
 }
 
 static void
-on_vox_enabled_changed(GtkSwitch *sw, GParamSpec *pspec, gpointer user_data)
+on_vox_enabled_changed(GObject *row, GParamSpec *pspec, gpointer user_data)
 {
   QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
-  gboolean enabled = gtk_switch_get_active(sw);
+  gboolean enabled = adw_switch_row_get_active(ADW_SWITCH_ROW(row));
   self->vox->setEnabled(enabled);
 
   // Update sensitivity of VOX controls
-  gtk_widget_set_sensitive(self->vox_threshold_scale, enabled);
-  gtk_widget_set_sensitive(self->vox_delay_spin, enabled);
+  gtk_widget_set_sensitive(self->vox_threshold_row, enabled);
+  gtk_widget_set_sensitive(self->vox_delay_row, enabled);
 }
 
 static void
-on_vox_threshold_changed(GtkRange *range, gpointer user_data)
+on_vox_threshold_changed(GObject *row, GParamSpec *pspec, gpointer user_data)
 {
   QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
-  int threshold = static_cast<int>(gtk_range_get_value(range));
+  int threshold = static_cast<int>(adw_spin_row_get_value(ADW_SPIN_ROW(row)));
   self->vox->setThreshold(threshold);
 }
 
 static void
-on_vox_delay_changed(GtkSpinButton *spin, gpointer user_data)
+on_vox_delay_changed(GObject *row, GParamSpec *pspec, gpointer user_data)
 {
   QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
-  int delay = gtk_spin_button_get_value_as_int(spin);
+  int delay = static_cast<int>(adw_spin_row_get_value(ADW_SPIN_ROW(row)));
   self->vox->setDelay(delay);
 }
 
@@ -345,28 +344,14 @@ on_vox_state_changed(VoxState state, gpointer user_data)
 {
   QtelCallDialog *self = QTEL_CALL_DIALOG(user_data);
 
-  // Update VOX indicator color
-  const gchar *css_class = nullptr;
-  switch (state)
+  // Update level bar color based on VOX state
+  if (state == VoxState::ACTIVE || state == VoxState::HANG)
   {
-    case VoxState::IDLE:
-      css_class = "indicator-idle";
-      break;
-    case VoxState::ACTIVE:
-      css_class = "indicator-tx";
-      break;
-    case VoxState::HANG:
-      css_class = "indicator-hang";
-      break;
+    gtk_widget_add_css_class(self->vox_level_bar, "vox-triggered");
   }
-
-  // Remove old classes and add new one
-  gtk_widget_remove_css_class(self->vox_indicator, "indicator-idle");
-  gtk_widget_remove_css_class(self->vox_indicator, "indicator-tx");
-  gtk_widget_remove_css_class(self->vox_indicator, "indicator-hang");
-  if (css_class != nullptr)
+  else
   {
-    gtk_widget_add_css_class(self->vox_indicator, css_class);
+    gtk_widget_remove_css_class(self->vox_level_bar, "vox-triggered");
   }
 
   check_transmit(self);
@@ -546,8 +531,8 @@ set_transmitting(QtelCallDialog *self, gboolean transmit)
   // Update TX indicator
   if (transmit)
   {
-    gtk_widget_remove_css_class(self->tx_indicator, "indicator-idle");
-    gtk_widget_add_css_class(self->tx_indicator, "indicator-tx");
+    gtk_widget_remove_css_class(self->tx_indicator, "rxtx-idle");
+    gtk_widget_add_css_class(self->tx_indicator, "rxtx-tx-active");
 
     if (!self->audio_full_duplex)
     {
@@ -566,8 +551,8 @@ set_transmitting(QtelCallDialog *self, gboolean transmit)
   }
   else
   {
-    gtk_widget_remove_css_class(self->tx_indicator, "indicator-tx");
-    gtk_widget_add_css_class(self->tx_indicator, "indicator-idle");
+    gtk_widget_remove_css_class(self->tx_indicator, "rxtx-tx-active");
+    gtk_widget_add_css_class(self->tx_indicator, "rxtx-idle");
 
     if (self->ptt_valve != nullptr)
       self->ptt_valve->setOpen(false);
@@ -599,13 +584,13 @@ set_receiving(QtelCallDialog *self, gboolean receiving)
   // Update RX indicator
   if (receiving)
   {
-    gtk_widget_remove_css_class(self->rx_indicator, "indicator-idle");
-    gtk_widget_add_css_class(self->rx_indicator, "indicator-rx");
+    gtk_widget_remove_css_class(self->rx_indicator, "rxtx-idle");
+    gtk_widget_add_css_class(self->rx_indicator, "rxtx-rx-active");
   }
   else
   {
-    gtk_widget_remove_css_class(self->rx_indicator, "indicator-rx");
-    gtk_widget_add_css_class(self->rx_indicator, "indicator-idle");
+    gtk_widget_remove_css_class(self->rx_indicator, "rxtx-rx-active");
+    gtk_widget_add_css_class(self->rx_indicator, "rxtx-idle");
   }
 }
 
@@ -615,8 +600,10 @@ update_ui_for_state(QtelCallDialog *self)
   switch (self->state)
   {
     case CONNECTION_STATE_DISCONNECTED:
+      // Show connect button, hide disconnect button
+      gtk_widget_set_visible(self->connect_button, TRUE);
+      gtk_widget_set_visible(self->disconnect_button, FALSE);
       gtk_widget_set_sensitive(self->connect_button, self->qso != nullptr);
-      gtk_widget_set_sensitive(self->disconnect_button, FALSE);
       gtk_widget_set_sensitive(self->ptt_button, FALSE);
       gtk_widget_set_sensitive(self->chat_entry, FALSE);
       gtk_label_set_text(GTK_LABEL(self->status_label), "Disconnected");
@@ -625,7 +612,9 @@ update_ui_for_state(QtelCallDialog *self)
       break;
 
     case CONNECTION_STATE_CONNECTING:
-      gtk_widget_set_sensitive(self->connect_button, FALSE);
+      // Show disconnect button (to allow canceling), hide connect button
+      gtk_widget_set_visible(self->connect_button, FALSE);
+      gtk_widget_set_visible(self->disconnect_button, TRUE);
       gtk_widget_set_sensitive(self->disconnect_button, TRUE);
       gtk_widget_set_sensitive(self->ptt_button, FALSE);
       gtk_widget_set_sensitive(self->chat_entry, FALSE);
@@ -633,7 +622,9 @@ update_ui_for_state(QtelCallDialog *self)
       break;
 
     case CONNECTION_STATE_CONNECTED:
-      gtk_widget_set_sensitive(self->connect_button, FALSE);
+      // Show disconnect button, hide connect button
+      gtk_widget_set_visible(self->connect_button, FALSE);
+      gtk_widget_set_visible(self->disconnect_button, TRUE);
       gtk_widget_set_sensitive(self->disconnect_button, TRUE);
       gtk_widget_set_sensitive(self->ptt_button, TRUE);
       gtk_widget_set_sensitive(self->chat_entry, TRUE);
@@ -642,8 +633,10 @@ update_ui_for_state(QtelCallDialog *self)
       break;
 
     case CONNECTION_STATE_BYE_RECEIVED:
+      // Show connect button (greyed out), hide disconnect button
+      gtk_widget_set_visible(self->connect_button, TRUE);
+      gtk_widget_set_visible(self->disconnect_button, FALSE);
       gtk_widget_set_sensitive(self->connect_button, FALSE);
-      gtk_widget_set_sensitive(self->disconnect_button, FALSE);
       gtk_widget_set_sensitive(self->ptt_button, FALSE);
       gtk_widget_set_sensitive(self->chat_entry, FALSE);
       gtk_label_set_text(GTK_LABEL(self->status_label), "Disconnecting...");
@@ -895,9 +888,13 @@ init_audio_pipeline(QtelCallDialog *self)
   self->vox->setThreshold(vox_threshold);
   self->vox->setDelay(vox_delay);
 
-  gtk_switch_set_active(GTK_SWITCH(self->vox_enable_switch), vox_enabled);
-  gtk_range_set_value(GTK_RANGE(self->vox_threshold_scale), vox_threshold);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(self->vox_delay_spin), vox_delay);
+  adw_switch_row_set_active(ADW_SWITCH_ROW(self->vox_enable_row), vox_enabled);
+  adw_spin_row_set_value(ADW_SPIN_ROW(self->vox_threshold_row), vox_threshold);
+  adw_spin_row_set_value(ADW_SPIN_ROW(self->vox_delay_row), vox_delay);
+
+  // Set initial sensitivity of threshold/delay rows based on VOX enabled state
+  gtk_widget_set_sensitive(self->vox_threshold_row, vox_enabled);
+  gtk_widget_set_sensitive(self->vox_delay_row, vox_enabled);
 
   // Check full duplex setting
   self->audio_full_duplex = settings_get_use_full_duplex(settings);
@@ -914,7 +911,7 @@ init_audio_pipeline(QtelCallDialog *self)
     {
       g_warning("Failed to open audio device in full duplex mode");
     }
-    gtk_widget_set_sensitive(self->vox_enable_switch, TRUE);
+    gtk_widget_set_sensitive(self->vox_enable_row, TRUE);
   }
   else
   {
@@ -930,7 +927,7 @@ init_audio_pipeline(QtelCallDialog *self)
     {
       g_warning("Failed to open speaker in half duplex mode");
     }
-    gtk_widget_set_sensitive(self->vox_enable_switch, FALSE);
+    gtk_widget_set_sensitive(self->vox_enable_row, FALSE);
   }
 
   // Start audio watchdog timer to recover from ALSA XRUN
@@ -1008,15 +1005,47 @@ add_css_provider(void)
   if (css_added) return;
 
   GtkCssProvider *provider = gtk_css_provider_new();
+  // GNOME HIG compliant styling:
+  // - Uses semantic colors from GNOME color palette
+  // - Pill-shaped badges for status indicators
+  // - Clear visual distinction between states
   gtk_css_provider_load_from_string(provider,
-    ".indicator-idle { background-color: @window_bg_color; }\n"
-    ".indicator-rx { background-color: #33d17a; }\n"  /* Green */
-    ".indicator-tx { background-color: #e01b24; }\n"  /* Red */
-    ".indicator-hang { background-color: #f6d32d; }\n" /* Yellow */
-    ".indicator { padding: 8px 16px; border-radius: 6px; "
-    "border: 1px solid @borders; }\n"
+    // RX/TX indicator base style - pill shaped badges
+    ".rxtx-indicator {\n"
+    "  padding: 6px 16px;\n"
+    "  border-radius: 9999px;\n"  // Pill shape
+    "  font-weight: bold;\n"
+    "  font-size: 0.9em;\n"
+    "  min-width: 48px;\n"
+    "  transition: all 150ms ease-in-out;\n"
+    "}\n"
+    // Idle state - subtle, muted appearance
+    ".rxtx-idle {\n"
+    "  background-color: alpha(@window_fg_color, 0.1);\n"
+    "  color: alpha(@window_fg_color, 0.5);\n"
+    "}\n"
+    // RX active - GNOME green (success color)
+    ".rxtx-rx-active {\n"
+    "  background-color: @success_bg_color;\n"
+    "  color: @success_fg_color;\n"
+    "}\n"
+    // TX active - GNOME red (destructive/error color)
+    ".rxtx-tx-active {\n"
+    "  background-color: @error_bg_color;\n"
+    "  color: @error_fg_color;\n"
+    "}\n"
+    // Fallback colors for systems without semantic colors
+    "@define-color success_bg_color #26a269;\n"
+    "@define-color success_fg_color white;\n"
+    "@define-color error_bg_color #c01c28;\n"
+    "@define-color error_fg_color white;\n"
+    // VOX level bar - changes color when voice detected
+    ".vox-triggered trough block.filled {\n"
+    "  background-color: @success_bg_color;\n"
+    "}\n"
+    // PTT button
     ".ptt-button { min-height: 60px; min-width: 200px; }\n"
-    ".ptt-active { background-color: #e01b24; color: white; }\n"
+    ".ptt-active { background-color: @error_bg_color; color: white; }\n"
   );
   gtk_style_context_add_provider_for_display(
     gdk_display_get_default(),
@@ -1028,10 +1057,9 @@ add_css_provider(void)
 }
 
 static GtkWidget *
-create_station_info_group(QtelCallDialog *self)
+create_station_tab(QtelCallDialog *self)
 {
   GtkWidget *group = adw_preferences_group_new();
-  adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Station");
 
   // Callsign row
   AdwActionRow *call_row = ADW_ACTION_ROW(adw_action_row_new());
@@ -1077,7 +1105,7 @@ create_chat_area(QtelCallDialog *self)
   gtk_widget_set_margin_end(box, 12);
   gtk_widget_set_margin_top(box, 12);
 
-  // Stack for Chat / Info tabs
+  // Stack for Chat / Info / Station tabs
   GtkWidget *stack = adw_view_stack_new();
 
   // Chat page
@@ -1106,6 +1134,12 @@ create_chat_area(QtelCallDialog *self)
     ADW_VIEW_STACK(stack), info_scroll, "info", "Info");
   adw_view_stack_page_set_icon_name(info_page, "dialog-information-symbolic");
 
+  // Station page
+  GtkWidget *station_content = create_station_tab(self);
+  AdwViewStackPage *station_page = adw_view_stack_add_titled(
+    ADW_VIEW_STACK(stack), station_content, "station", "Station");
+  adw_view_stack_page_set_icon_name(station_page, "network-server-symbolic");
+
   gtk_widget_set_vexpand(stack, TRUE);
 
   // View switcher
@@ -1131,19 +1165,19 @@ create_indicators(QtelCallDialog *self)
 {
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
-  gtk_widget_set_margin_top(box, 6);
-  gtk_widget_set_margin_bottom(box, 6);
+  gtk_widget_set_margin_top(box, 12);
+  gtk_widget_set_margin_bottom(box, 12);
 
-  // RX indicator
+  // RX indicator - pill-shaped badge following GNOME HIG
   self->rx_indicator = gtk_label_new("RX");
-  gtk_widget_add_css_class(self->rx_indicator, "indicator");
-  gtk_widget_add_css_class(self->rx_indicator, "indicator-idle");
+  gtk_widget_add_css_class(self->rx_indicator, "rxtx-indicator");
+  gtk_widget_add_css_class(self->rx_indicator, "rxtx-idle");
   gtk_box_append(GTK_BOX(box), self->rx_indicator);
 
-  // TX indicator
+  // TX indicator - pill-shaped badge following GNOME HIG
   self->tx_indicator = gtk_label_new("TX");
-  gtk_widget_add_css_class(self->tx_indicator, "indicator");
-  gtk_widget_add_css_class(self->tx_indicator, "indicator-idle");
+  gtk_widget_add_css_class(self->tx_indicator, "rxtx-indicator");
+  gtk_widget_add_css_class(self->tx_indicator, "rxtx-idle");
   gtk_box_append(GTK_BOX(box), self->tx_indicator);
 
   return box;
@@ -1155,57 +1189,43 @@ create_vox_controls(QtelCallDialog *self)
   GtkWidget *group = adw_preferences_group_new();
   adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "VOX");
 
-  // Enable row
-  AdwActionRow *enable_row = ADW_ACTION_ROW(adw_action_row_new());
-  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(enable_row), "Enable VOX");
-  self->vox_enable_switch = gtk_switch_new();
-  gtk_widget_set_valign(self->vox_enable_switch, GTK_ALIGN_CENTER);
-  g_signal_connect(self->vox_enable_switch, "notify::active",
+  // Voice Activation row (AdwSwitchRow)
+  self->vox_enable_row = GTK_WIDGET(adw_switch_row_new());
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->vox_enable_row), "Voice Activation");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(self->vox_enable_row), "Transmit when voice detected");
+  g_signal_connect(self->vox_enable_row, "notify::active",
                    G_CALLBACK(on_vox_enabled_changed), self);
-  adw_action_row_add_suffix(enable_row, self->vox_enable_switch);
-  adw_action_row_set_activatable_widget(enable_row, self->vox_enable_switch);
-  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), GTK_WIDGET(enable_row));
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->vox_enable_row);
 
-  // Level meter row
+  // Input Level row (AdwActionRow + GtkLevelBar)
   AdwActionRow *level_row = ADW_ACTION_ROW(adw_action_row_new());
-  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(level_row), "Level");
-  GtkWidget *level_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(level_row), "Input Level");
   self->vox_level_bar = gtk_level_bar_new_for_interval(0, 1);
   gtk_level_bar_set_mode(GTK_LEVEL_BAR(self->vox_level_bar), GTK_LEVEL_BAR_MODE_CONTINUOUS);
   gtk_widget_set_size_request(self->vox_level_bar, 150, -1);
   gtk_widget_set_valign(self->vox_level_bar, GTK_ALIGN_CENTER);
-  self->vox_indicator = gtk_label_new("");
-  gtk_widget_set_size_request(self->vox_indicator, 20, 20);
-  gtk_widget_add_css_class(self->vox_indicator, "indicator-idle");
-  gtk_box_append(GTK_BOX(level_box), self->vox_level_bar);
-  gtk_box_append(GTK_BOX(level_box), self->vox_indicator);
-  adw_action_row_add_suffix(level_row, level_box);
+  adw_action_row_add_suffix(level_row, self->vox_level_bar);
   adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), GTK_WIDGET(level_row));
 
-  // Threshold row
-  AdwActionRow *threshold_row = ADW_ACTION_ROW(adw_action_row_new());
-  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(threshold_row), "Threshold");
-  self->vox_threshold_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, -60, 0, 1);
-  gtk_range_set_value(GTK_RANGE(self->vox_threshold_scale), -30);
-  gtk_widget_set_size_request(self->vox_threshold_scale, 150, -1);
-  gtk_widget_set_valign(self->vox_threshold_scale, GTK_ALIGN_CENTER);
-  gtk_widget_set_sensitive(self->vox_threshold_scale, FALSE);
-  g_signal_connect(self->vox_threshold_scale, "value-changed",
+  // Activation Threshold row (AdwSpinRow)
+  GtkAdjustment *threshold_adj = gtk_adjustment_new(-30, -60, 0, 1, 5, 0);
+  self->vox_threshold_row = GTK_WIDGET(adw_spin_row_new(threshold_adj, 1, 0));
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->vox_threshold_row), "Activation Threshold");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(self->vox_threshold_row), "dB");
+  gtk_widget_set_sensitive(self->vox_threshold_row, FALSE);
+  g_signal_connect(self->vox_threshold_row, "notify::value",
                    G_CALLBACK(on_vox_threshold_changed), self);
-  adw_action_row_add_suffix(threshold_row, self->vox_threshold_scale);
-  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), GTK_WIDGET(threshold_row));
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->vox_threshold_row);
 
-  // Delay row
-  AdwActionRow *delay_row = ADW_ACTION_ROW(adw_action_row_new());
-  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(delay_row), "Delay (ms)");
-  self->vox_delay_spin = gtk_spin_button_new_with_range(0, 3000, 100);
-  gtk_spin_button_set_value(GTK_SPIN_BUTTON(self->vox_delay_spin), 1000);
-  gtk_widget_set_valign(self->vox_delay_spin, GTK_ALIGN_CENTER);
-  gtk_widget_set_sensitive(self->vox_delay_spin, FALSE);
-  g_signal_connect(self->vox_delay_spin, "value-changed",
+  // Hold Time row (AdwSpinRow)
+  GtkAdjustment *delay_adj = gtk_adjustment_new(1000, 0, 3000, 100, 500, 0);
+  self->vox_delay_row = GTK_WIDGET(adw_spin_row_new(delay_adj, 100, 0));
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(self->vox_delay_row), "Hold Time");
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(self->vox_delay_row), "Milliseconds after voice stops");
+  gtk_widget_set_sensitive(self->vox_delay_row, FALSE);
+  g_signal_connect(self->vox_delay_row, "notify::value",
                    G_CALLBACK(on_vox_delay_changed), self);
-  adw_action_row_add_suffix(delay_row, self->vox_delay_spin);
-  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), GTK_WIDGET(delay_row));
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), self->vox_delay_row);
 
   return group;
 }
@@ -1334,17 +1354,17 @@ qtel_call_dialog_init(QtelCallDialog *self)
   // Header bar
   self->header_bar = adw_header_bar_new();
 
-  // Connect button
+  // Connect button (shown when disconnected)
   self->connect_button = gtk_button_new_with_label("Connect");
   gtk_widget_add_css_class(self->connect_button, "suggested-action");
   gtk_widget_set_sensitive(self->connect_button, FALSE);  // Disabled until QSO created
   g_signal_connect(self->connect_button, "clicked", G_CALLBACK(on_connect_clicked), self);
   adw_header_bar_pack_start(ADW_HEADER_BAR(self->header_bar), self->connect_button);
 
-  // Disconnect button
+  // Disconnect button (shown when connected, hidden initially)
   self->disconnect_button = gtk_button_new_with_label("Disconnect");
   gtk_widget_add_css_class(self->disconnect_button, "destructive-action");
-  gtk_widget_set_sensitive(self->disconnect_button, FALSE);
+  gtk_widget_set_visible(self->disconnect_button, FALSE);
   g_signal_connect(self->disconnect_button, "clicked", G_CALLBACK(on_disconnect_clicked), self);
   adw_header_bar_pack_start(ADW_HEADER_BAR(self->header_bar), self->disconnect_button);
 
@@ -1361,10 +1381,7 @@ qtel_call_dialog_init(QtelCallDialog *self)
   gtk_widget_set_margin_top(content_box, 12);
   gtk_widget_set_margin_bottom(content_box, 12);
 
-  // Station info
-  gtk_box_append(GTK_BOX(content_box), create_station_info_group(self));
-
-  // Chat area
+  // Chat area (includes Station tab)
   gtk_box_append(GTK_BOX(content_box), create_chat_area(self));
 
   // RX/TX indicators
