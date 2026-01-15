@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Radio waves - symbolic style -->
+  <path d="M 8 2 A 6 6 0 0 1 14 8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 8 4 A 4 4 0 0 1 12 8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 8 6 A 2 2 0 0 1 10 8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+
+  <path d="M 8 2 A 6 6 0 0 0 2 8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 8 4 A 4 4 0 0 0 4 8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+  <path d="M 8 6 A 2 2 0 0 0 6 8" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+
+  <!-- Center dot -->
+  <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+
+  <!-- Globe hint -->
+  <ellipse cx="8" cy="13" rx="4" ry="1.5" stroke="currentColor" stroke-width="1" fill="none"/>
+</svg>

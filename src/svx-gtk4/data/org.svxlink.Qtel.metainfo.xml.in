@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.svxlink.Qtel</id>
+  <name>Qtel</name>
+  <summary>EchoLink client for amateur radio operators</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+
+  <developer id="org.svxlink">
+    <name>Tobias Blomberg / SM0SVX</name>
+  </developer>
+
+  <description>
+    <p>
+      Qtel is a graphical EchoLink client that allows amateur radio operators
+      to communicate over the internet using Voice over IP technology.
+    </p>
+    <p>
+      EchoLink connects amateur radio stations using the internet, allowing
+      operators to communicate with other operators around the world from
+      anywhere with an internet connection.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Browse and connect to EchoLink stations worldwide</li>
+      <li>Full duplex audio communication</li>
+      <li>Voice-operated transmission (VOX)</li>
+      <li>Text chat messaging</li>
+      <li>Station bookmarks</li>
+      <li>Proxy server support for NAT traversal</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">org.svxlink.Qtel.desktop</launchable>
+
+  <url type="homepage">https://www.svxlink.org/</url>
+  <url type="bugtracker">https://github.com/sm0svx/svxlink/issues</url>
+  <url type="help">https://github.com/sm0svx/svxlink/wiki</url>
+
+  <categories>
+    <category>Audio</category>
+    <category>Network</category>
+    <category>HamRadio</category>
+  </categories>
+
+  <keywords>
+    <keyword>echolink</keyword>
+    <keyword>ham</keyword>
+    <keyword>radio</keyword>
+    <keyword>amateur</keyword>
+    <keyword>voip</keyword>
+    <keyword>ptt</keyword>
+  </keywords>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#3584e4</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">moderate</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+  </content_rating>
+
+  <provides>
+    <binary>qtel-gtk4</binary>
+  </provides>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <releases>
+    <release version="2.0.0" date="2024-12-14">
+      <description>
+        <p>First GTK4 release - complete rewrite using modern GNOME technologies.</p>
+        <ul>
+          <li>Native GTK4 and libadwaita interface</li>
+          <li>Follows GNOME Human Interface Guidelines</li>
+          <li>Adaptive layout for different screen sizes</li>
+          <li>Dark mode support</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

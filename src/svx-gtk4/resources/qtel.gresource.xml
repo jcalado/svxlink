@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/svxlink/qtel">
+    <!-- UI files -->
+    <file preprocess="xml-stripblanks">shortcuts.ui</file>
+
+    <!-- Application icons -->
+    <file preprocess="xml-stripblanks">icons/hicolor/scalable/apps/org.svxlink.Qtel.svg</file>
+    <file preprocess="xml-stripblanks">icons/hicolor/symbolic/apps/org.svxlink.Qtel-symbolic.svg</file>
+
+    <!-- Status icons -->
+    <file preprocess="xml-stripblanks">icons/hicolor/scalable/status/station-online-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/hicolor/scalable/status/station-offline-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/hicolor/scalable/status/station-busy-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/hicolor/scalable/status/station-conference-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/hicolor/scalable/status/station-repeater-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/hicolor/scalable/status/station-link-symbolic.svg</file>
+  </gresource>
+</gresources>
